@@ -154,7 +154,12 @@ export function validateSale(r: Sale): Sale {
   assertCurrency(r.currency);
   if (!Array.isArray(r.items) || r.items.length === 0) fail("sale needs at least one item.");
   let total = 0;
+  const seenProductIds = new Set<string>();
   for (const item of r.items) {
+    if (seenProductIds.has(item.productId)) {
+      fail("sale items must not contain the same product twice.");
+    }
+    seenProductIds.add(item.productId);
     assertName(item.name, "item name");
     if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
       fail("item quantity must be a positive integer.");
@@ -165,6 +170,25 @@ export function validateSale(r: Sale): Sale {
     total += expected;
   }
   if (r.totalMinor !== total) fail("sale totalMinor does not match its line items.");
+  if (r.paymentMethod !== undefined && r.paymentMethod !== "cash") {
+    fail("sale paymentMethod is invalid.");
+  }
+  if (r.amountReceivedMinor !== undefined && r.amountReceivedMinor !== null) {
+    assertMinorUnits(r.amountReceivedMinor, "amountReceivedMinor");
+    if (r.amountReceivedMinor < r.totalMinor) {
+      fail("amount received is less than the sale total.");
+    }
+  }
+  if (r.changeMinor !== undefined && r.changeMinor !== null) {
+    assertMinorUnits(r.changeMinor, "changeMinor");
+    if (
+      r.amountReceivedMinor === undefined ||
+      r.amountReceivedMinor === null ||
+      r.changeMinor !== r.amountReceivedMinor - r.totalMinor
+    ) {
+      fail("changeMinor does not match amount received minus total.");
+    }
+  }
   return r;
 }
 

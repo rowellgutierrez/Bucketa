@@ -105,6 +105,12 @@ export interface Sale {
   /** Sum of line totals, computed in code at validation time. */
   totalMinor: MinorUnits;
   currency: CurrencyCode;
+  /** Cash payment details for POS sales; absent on older records. */
+  paymentMethod?: "cash";
+  amountReceivedMinor?: MinorUnits | null;
+  changeMinor?: MinorUnits | null;
+  /** Human-readable receipt number stored at checkout time. */
+  receiptNumber?: string;
   createdAt: string;
   updatedAt: string;
 }

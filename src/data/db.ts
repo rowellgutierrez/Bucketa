@@ -187,6 +187,124 @@ function createRepository<T extends { id: string; createdAt: string; updatedAt: 
   };
 }
 
+/**
+ * Completes a POS sale atomically: in ONE read-write IndexedDB
+ * transaction over the sales and products stores, it checks the sale
+ * has not already been recorded, re-reads every product to revalidate
+ * business ownership, active status, currency, snapshot price, and
+ * available stock, deducts the sold quantities, and only then adds the
+ * sale. Any failure aborts the transaction, so a sale can never be
+ * recorded without its stock deduction, stock can never be deducted
+ * twice for one sale, and overselling is impossible even with stale
+ * carts or concurrent tabs (IndexedDB serialises these transactions).
+ *
+ * Resolves "completed" for a new sale, or "already-completed" when a
+ * sale with the same ID already exists (a retried checkout), in which
+ * case nothing is deducted again. Creates no financial transaction
+ * records: the sale itself is the revenue record for reporting.
+ */
+export function completeSale(sale: Sale): Promise<"completed" | "already-completed"> {
+  validateSale(sale);
+  return openDb().then(
+    (db) =>
+      new Promise<"completed" | "already-completed">((resolve, reject) => {
+        const transaction = db.transaction(["sales", "products"], "readwrite");
+        const salesStore = transaction.objectStore("sales");
+        const productsStore = transaction.objectStore("products");
+        let alreadyCompleted = false;
+        let settled = false;
+
+        const fail = (message: string) => {
+          if (settled) return;
+          settled = true;
+          try {
+            transaction.abort();
+          } catch {
+            // Transaction already finished; the reject below still applies.
+          }
+          reject(new BucketaDataError(message));
+        };
+        transaction.oncomplete = () => {
+          if (settled) return;
+          settled = true;
+          resolve(alreadyCompleted ? "already-completed" : "completed");
+        };
+        transaction.onerror = () => {
+          if (settled) return;
+          settled = true;
+          reject(new BucketaDataError("Sale could not be completed. Nothing was saved."));
+        };
+        transaction.onabort = () => {
+          if (settled) return;
+          settled = true;
+          reject(new BucketaDataError("Sale was cancelled. Nothing was saved."));
+        };
+
+        const existingRequest = salesStore.get(sale.id);
+        existingRequest.onerror = () => fail("Could not check for a duplicate sale.");
+        existingRequest.onsuccess = () => {
+          if (settled) return;
+          if (existingRequest.result) {
+            // Same checkout retried: recognise it, deduct nothing again.
+            alreadyCompleted = true;
+            return;
+          }
+          let pendingReads = sale.items.length;
+          if (pendingReads === 0) {
+            fail("Sale needs at least one item.");
+            return;
+          }
+          for (const item of sale.items) {
+            const getRequest = productsStore.get(item.productId);
+            getRequest.onerror = () => fail(`Could not load “${item.name}”.`);
+            getRequest.onsuccess = () => {
+              if (settled) return;
+              const product = getRequest.result as Product | undefined;
+              if (!product) {
+                fail(`“${item.name}” no longer exists. Remove it from the cart.`);
+                return;
+              }
+              if (product.profileId !== sale.profileId) {
+                fail(`“${item.name}” does not belong to this business.`);
+                return;
+              }
+              if (product.status === "archived") {
+                fail(`“${item.name}” is archived and can no longer be sold.`);
+                return;
+              }
+              if (product.currency !== sale.currency) {
+                fail(`“${item.name}” is priced in ${product.currency}, not ${sale.currency}.`);
+                return;
+              }
+              if (product.priceMinor !== item.unitPriceMinor) {
+                fail(`The price of “${item.name}” has changed. Review the cart and try again.`);
+                return;
+              }
+              if (product.stock < item.quantity) {
+                fail(
+                  `Only ${product.stock} of “${item.name}” left in stock, but the cart has ${item.quantity}.`,
+                );
+                return;
+              }
+              const putRequest = productsStore.put({
+                ...product,
+                stock: product.stock - item.quantity,
+                updatedAt: nowIso(),
+              });
+              putRequest.onerror = () => fail(`Could not update stock for “${item.name}”.`);
+              pendingReads -= 1;
+              if (pendingReads === 0 && !alreadyCompleted) {
+                const addRequest = salesStore.add(sale);
+                addRequest.onerror = () =>
+                  fail("This sale was already recorded. Nothing was deducted again.");
+              }
+            };
+          }
+        };
+      }),
+  );
+}
+
 export const profilesRepo = createRepository<Profile>("profiles", validateProfile, { byProfile: false });
 export const bucketsRepo = createRepository<Bucket>("buckets", validateBucket);
 export const transactionsRepo = createRepository<Transaction>("transactions", validateTransaction);

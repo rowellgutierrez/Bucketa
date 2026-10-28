@@ -28,6 +28,15 @@ import {
   summarizeTransactions,
 } from "../lib/finance.ts";
 import {
+  addToCart,
+  buildSale,
+  buildSaleItems,
+  cartTotalMinor,
+  changeDueMinor,
+  removeFromCart,
+  setCartQuantity,
+} from "../lib/pos.ts";
+import {
   amountOf,
   amountsForEdit,
   bucketCurrencyMismatch,
@@ -468,6 +477,89 @@ test("sale totals are computed in integers and mismatches are rejected", () => {
       createdAt: stamp, updatedAt: stamp,
     }),
     BucketaDataError,
+  );
+});
+
+test("POS cart caps at stock, snapshots prices, and computes cash change in minor units", () => {
+  const rice = {
+    id: "pr1", profileId: "p1", name: "Rice 1kg", sku: "RICE-1", category: null,
+    priceMinor: 6000, costMinor: null, currency: "PHP", stock: 2,
+    status: "active" as const, createdAt: stamp, updatedAt: stamp,
+  };
+  const egg = { ...rice, id: "pr2", name: "Egg", sku: null, priceMinor: 900, stock: 10 };
+
+  // Tapping adds up to available stock and never beyond it.
+  let cart = addToCart([], rice);
+  cart = addToCart(cart, rice);
+  cart = addToCart(cart, rice);
+  assert.deepEqual(cart, [{ productId: "pr1", quantity: 2 }]);
+  cart = setCartQuantity(cart, rice, 99);
+  assert.equal(cart[0].quantity, 2);
+  cart = addToCart(cart, egg);
+  assert.equal(cart.length, 2);
+  cart = removeFromCart(cart, "pr2");
+  assert.deepEqual(cart, [{ productId: "pr1", quantity: 2 }]);
+
+  // Snapshots keep the price and name from sale time, even if the
+  // product is later edited.
+  const items = buildSaleItems(cart, [rice, egg]);
+  const edited = { ...rice, name: "Rice 5kg", priceMinor: 99999 };
+  assert.equal(items[0].name, "Rice 1kg");
+  assert.equal(items[0].unitPriceMinor, 6000);
+  assert.notEqual(items[0].unitPriceMinor, edited.priceMinor);
+  assert.equal(cartTotalMinor(items), 12000);
+
+  // Cash change is exact integer minor units; underpayment is rejected.
+  assert.equal(changeDueMinor(12000, 20000), 8000);
+  assert.equal(changeDueMinor(12000, 12000), 0);
+  assert.equal(changeDueMinor(12000, 11999), null);
+
+  const sale = buildSale({
+    id: "sale-abcdef123456", profileId: "p1", currency: "PHP",
+    items, amountReceivedMinor: 20000, createdAt: stamp,
+  });
+  assert.equal(sale.totalMinor, 12000);
+  assert.equal(sale.changeMinor, 8000);
+  assert.equal(sale.receiptNumber, "20261027-SALEABCD");
+  assert.equal(
+    validateSale({ ...sale, updatedAt: stamp }).receiptNumber,
+    "20261027-SALEABCD",
+  );
+  assert.throws(
+    () => validateSale({ ...sale, amountReceivedMinor: 11000, changeMinor: 0, updatedAt: stamp }),
+    BucketaDataError,
+  );
+  assert.throws(
+    () => validateSale({ ...sale, changeMinor: 7000, updatedAt: stamp }),
+    BucketaDataError,
+  );
+
+  // The same product may never appear on two lines of one sale, even
+  // when each line is internally consistent: combined lines could pass
+  // a per-line stock check while overselling in total. A valid sale
+  // with distinct products remains accepted (covered above and here).
+  const duplicateItems = [
+    { productId: "pr1", name: "Rice 1kg", sku: "RICE-1", unitPriceMinor: 6000, quantity: 1, lineTotalMinor: 6000 },
+    { productId: "pr1", name: "Rice 1kg", sku: "RICE-1", unitPriceMinor: 6000, quantity: 1, lineTotalMinor: 6000 },
+  ];
+  assert.throws(
+    () =>
+      validateSale({
+        id: "s-dup", profileId: "p1", items: duplicateItems, totalMinor: 12000,
+        currency: "PHP", createdAt: stamp, updatedAt: stamp,
+      }),
+    BucketaDataError,
+  );
+  const distinctItems = [
+    duplicateItems[0],
+    { productId: "pr2", name: "Egg", sku: null, unitPriceMinor: 900, quantity: 2, lineTotalMinor: 1800 },
+  ];
+  assert.equal(
+    validateSale({
+      id: "s-ok", profileId: "p1", items: distinctItems, totalMinor: 7800,
+      currency: "PHP", createdAt: stamp, updatedAt: stamp,
+    }).items.length,
+    2,
   );
 });
 

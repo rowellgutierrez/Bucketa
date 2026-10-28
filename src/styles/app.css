@@ -86,9 +86,16 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
 .profile-create-card h3{font-size:15px;margin:0}
 .print-report{display:none}
 @media print{
-  body{background:#fff}
+  @page{margin:10mm}
+  body{background:#fff;margin:0}
   body *{visibility:hidden}
   .print-report,.print-report *{visibility:visible}
+  /* Remove non-print content from layout so it cannot generate blank
+     pages: everything that is not the print report, an ancestor of it,
+     or inside it is display:none. Ancestors stay rendered so the
+     report survives. Falls back to visibility-only where :has() is
+     unsupported. Applies to both Receipt and Business Report. */
+  body:has(.print-report) *:not(:has(.print-report)):not(.print-report):not(.print-report *){display:none!important}
   .print-report{display:block;position:absolute;left:0;top:0;width:100%;color:#000;font-size:12pt}
   .print-report h1{font-size:20pt;margin:0 0 4px}
   .print-report h2{font-size:16pt;margin:0 0 12px}
@@ -102,7 +109,22 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
   .print-report table{width:100%;border-collapse:collapse;margin-bottom:12px}
   .print-report th,.print-report td{border:1px solid #999;padding:5px 8px;text-align:left;vertical-align:top}
   .print-report footer{margin-top:24px;font-size:10pt}
+  .print-report.receipt{width:80mm;max-width:100%;font-size:10pt}
+  .print-report.receipt h1{font-size:14pt}
+  .print-report.receipt th,.print-report.receipt td{padding:3px 4px}
+  .print-report.receipt .report-details{grid-template-columns:1fr}
+  .print-report.receipt footer{margin-top:8px}
 }
+/* --- Sales / POS --- */
+.pos-layout{display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start}
+.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.pos-card{display:flex;flex-direction:column;gap:4px;align-items:flex-start;text-align:left;font:inherit;background:var(--bk-surface-2);border:1px solid var(--bk-border);border-radius:12px;padding:12px;cursor:pointer;min-height:96px;color:var(--bk-text)}
+.pos-card:disabled{opacity:.55;cursor:not-allowed}
+.pos-card strong{font-size:15px}
+.cart-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--bk-border);flex-wrap:wrap}
+.pos-totals{display:flex;flex-direction:column;gap:4px;margin:12px 0}
+.pos-totals div{display:flex;justify-content:space-between;font-weight:700}
+@media (max-width:900px){.pos-layout{grid-template-columns:1fr}}
 /* --- Business Buckets dashboard --- */
 .content:has(.buckets-dashboard){max-width:1240px;padding:36px 32px 96px}
 .buckets-dashboard{display:flex;flex-direction:column;gap:24px}
