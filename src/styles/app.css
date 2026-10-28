@@ -53,6 +53,7 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
 .bucket-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px;border-bottom:1px solid var(--bk-border)}
 .bucket-row:last-child{border-bottom:0}
 .bucket-row strong{font-size:16px}
+.product-archived{opacity:.62}
 .bucket-meta{margin:2px 0 0;font-size:13px}
 .currency-badge{font-weight:800;font-size:13px;color:var(--bk-navy-900);background:var(--bk-sky-100);border-radius:999px;padding:5px 12px;white-space:nowrap}
 [data-theme="dark"] .currency-badge{color:var(--bk-text)}

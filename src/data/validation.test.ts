@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   BucketaDataError,
   computeSaleTotal,
+  findSkuConflict,
   findUnsafeBusinessReferences,
   validateBucket,
   validateProduct,
@@ -411,13 +412,43 @@ test("dashboard aggregation keeps currencies separate and groups real records", 
 test("products require integer money and non-negative integer stock", () => {
   const base = {
     id: "pr1", profileId: "p1", name: "Rice 1kg", sku: "RICE-1",
-    priceMinor: 6000, costMinor: 4500, currency: "PHP",
+    category: null, priceMinor: 6000, costMinor: 4500, currency: "PHP",
     createdAt: stamp, updatedAt: stamp,
   };
   assert.equal(validateProduct({ ...base, stock: 12 }).stock, 12);
   assert.throws(() => validateProduct({ ...base, stock: 1.5 }), BucketaDataError);
   assert.throws(() => validateProduct({ ...base, stock: -1 }), BucketaDataError);
   assert.throws(() => validateProduct({ ...base, priceMinor: 60.5, stock: 1 }), BucketaDataError);
+});
+
+test("products allow optional SKU, category, and cost, and archive safely", () => {
+  const base = {
+    id: "pr1", profileId: "p1", name: "Rice 1kg", sku: "RICE-1",
+    category: null, priceMinor: 6000, costMinor: 4500, currency: "PHP",
+    stock: 3, createdAt: stamp, updatedAt: stamp,
+  };
+  // No SKU, no category, and no tracked cost are all valid.
+  const bare = validateProduct({ ...base, sku: null, category: null, costMinor: null });
+  assert.equal(bare.sku, null);
+  assert.equal(bare.costMinor, null);
+  assert.equal(validateProduct({ ...base, category: "Drinks" }).category, "Drinks");
+  assert.equal(validateProduct({ ...base, status: "archived" }).status, "archived");
+  assert.throws(() => validateProduct({ ...base, status: "deleted" as never }), BucketaDataError);
+  assert.throws(() => validateProduct({ ...base, costMinor: 10.5 }), BucketaDataError);
+
+  // SKU conflicts are per business and case-insensitive; blank SKUs
+  // never conflict, so many products may have no SKU at all.
+  const products = [
+    { ...base, id: "a", sku: "RICE-1" },
+    { ...base, id: "b", sku: null },
+    { ...base, id: "c", profileId: "p2", sku: "RICE-1" },
+  ];
+  assert.equal(findSkuConflict(products, "p1", " rice-1 ")?.id, "a");
+  assert.equal(findSkuConflict(products, "p1", "RICE-1", "a"), null);
+  assert.equal(findSkuConflict(products, "p2", "RICE-1")?.id, "c");
+  assert.equal(findSkuConflict(products, "p1", null), null);
+  assert.equal(findSkuConflict(products, "p1", "  "), null);
+  assert.equal(findSkuConflict(products, "p1", "NEW-1"), null);
 });
 
 test("sale totals are computed in integers and mismatches are rejected", () => {

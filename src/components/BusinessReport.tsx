@@ -165,7 +165,7 @@ export default function BusinessReport({ data }: { data: BusinessReportData }) {
                     <td>{product.name}</td>
                     <td>{product.sku}</td>
                     <td>{formatMoney(product.priceMinor, product.currency)}</td>
-                    <td>{formatMoney(product.costMinor, product.currency)}</td>
+                    <td>{product.costMinor !== null ? formatMoney(product.costMinor, product.currency) : "—"}</td>
                     <td>{product.stock}</td>
                   </tr>
                 ))}

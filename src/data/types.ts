@@ -59,11 +59,21 @@ export interface Product {
   /** Owning business profile. */
   profileId: string;
   name: string;
-  sku: string;
+  /** Optional stock-keeping code; unique within the business when present. */
+  sku: string | null;
+  /** Optional grouping label, e.g. "Drinks". */
+  category: string | null;
   priceMinor: MinorUnits;
-  costMinor: MinorUnits;
+  /** Optional purchase cost; null means cost is not tracked. */
+  costMinor: MinorUnits | null;
   currency: CurrencyCode;
   stock: number;
+  /**
+   * Archived products stay stored (past sales keep referencing them) and
+   * can be restored. Absent means active, so older records need no
+   * migration.
+   */
+  status?: "active" | "archived";
   createdAt: string;
   updatedAt: string;
 }

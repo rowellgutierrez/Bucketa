@@ -101,13 +101,44 @@ export function validateTransaction(r: Transaction): Transaction {
 
 export function validateProduct(r: Product): Product {
   assertName(r.name);
-  assertName(r.sku, "sku");
+  if (r.sku !== null && r.sku !== undefined) assertName(r.sku, "sku");
+  if (r.category !== null && r.category !== undefined) assertName(r.category, "category");
   if (!r.profileId) fail("product profileId is required.");
   assertMinorUnits(r.priceMinor, "priceMinor");
-  assertMinorUnits(r.costMinor, "costMinor");
+  if (r.costMinor !== null && r.costMinor !== undefined) {
+    assertMinorUnits(r.costMinor, "costMinor");
+  }
   assertCurrency(r.currency);
   assertStock(r.stock);
+  if (r.status !== undefined && r.status !== "active" && r.status !== "archived") {
+    fail("product status is invalid.");
+  }
   return r;
+}
+
+/** Normalised SKU for comparison: trimmed and case-insensitive. */
+export function normalizeSku(sku: string | null | undefined): string {
+  return (sku ?? "").trim().toUpperCase();
+}
+
+/**
+ * Finds a product in the same business that already uses this SKU, or
+ * null. Products without an SKU never conflict, so any number of them
+ * may share a business. `excludeId` ignores the product being edited.
+ */
+export function findSkuConflict(
+  products: Product[],
+  profileId: string,
+  sku: string | null | undefined,
+  excludeId = "",
+): Product | null {
+  const wanted = normalizeSku(sku);
+  if (!wanted) return null;
+  return (
+    products.find(
+      (p) => p.id !== excludeId && p.profileId === profileId && normalizeSku(p.sku) === wanted,
+    ) ?? null
+  );
 }
 
 export function validateEmployee(r: Employee): Employee {
