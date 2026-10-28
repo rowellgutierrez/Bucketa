@@ -1,0 +1,33 @@
+# Bucketa — local design archive: preserved locally, never published
+archive/
+generated_images/
+
+# Original branding reference: preserved locally, not included in the repository
+assets/bucketa-approved-logo.png
+
+# Tool / runtime folders
+.agents/
+.muse/
+.eden/
+.hg/
+.sl/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build output and generated folders
+node_modules/
+dist/
+coverage/
+.vite/
+*.log

@@ -1,0 +1,22 @@
+/* Bucketa design tokens — reusable design system. Import this file, use the variables. */
+:root{
+  --bk-navy-950:#07182E; --bk-navy-900:#014184; --bk-navy-800:#10365E;
+  --bk-blue-700:#1D4ED8; --bk-blue-600:#2563EB; --bk-blue-500:#3B82F6;
+  --bk-sky-400:#38BDF8; --bk-sky-100:#E0F2FE;
+  --bk-bg:#F4F8FC; --bk-surface:#FFFFFF; --bk-surface-2:#EDF3F9;
+  --bk-text:#0F2440; --bk-text-2:#486581; --bk-border:#D9E4F0;
+  --bk-success:#0E9F6E; --bk-warning:#D97706; --bk-danger:#DC2626;
+  --bk-gradient:linear-gradient(135deg,#014184 0%,#2563EB 55%,#38BDF8 130%);
+  --bk-font-display:"Plus Jakarta Sans","Segoe UI",system-ui,sans-serif;
+  --bk-font-body:"Plus Jakarta Sans","Segoe UI",system-ui,-apple-system,sans-serif;
+  --bk-radius-sm:8px; --bk-radius:12px; --bk-radius-lg:18px;
+  --bk-shadow:0 1px 2px rgba(10,37,64,.06),0 8px 24px -12px rgba(10,37,64,.18);
+  --bk-shadow-lg:0 2px 4px rgba(10,37,64,.06),0 20px 44px -16px rgba(10,37,64,.28);
+  --bk-space:8px;
+}
+[data-theme="dark"]{
+  --bk-bg:#07182E; --bk-surface:#0C2A4D; --bk-surface-2:#10365E;
+  --bk-text:#F2F7FC; --bk-text-2:#A9C2DC; --bk-border:#1E4A75;
+  --bk-shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.5);
+  --bk-shadow-lg:0 2px 4px rgba(0,0,0,.3),0 20px 44px -16px rgba(0,0,0,.6);
+}
