@@ -4,7 +4,13 @@ export type { CurrencyCode, MinorUnits };
 
 export type ProfileKind = "personal" | "business";
 export type BucketKind = "savings" | "budget" | "allocated";
-export type TransactionType = "income" | "expense" | "transfer" | "sale";
+export type TransactionType =
+  | "income"
+  | "expense"
+  | "transfer"
+  | "sale"
+  | "savings-deposit"
+  | "savings-withdrawal";
 export type TransactionOrigin = "manual" | "pos" | "scanner-confirmed";
 
 export interface Profile {
@@ -23,6 +29,8 @@ export interface Bucket {
   name: string;
   kind: BucketKind;
   currency: CurrencyCode;
+  /** Optional savings goal in minor units of `currency`. Absent/null = no goal. */
+  targetMinor?: MinorUnits | null;
   createdAt: string;
   updatedAt: string;
 }

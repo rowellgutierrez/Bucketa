@@ -256,4 +256,47 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
   .content:has(.finance-page){padding:24px 16px 96px}
   .pie{width:140px;height:140px;flex-basis:140px}
 }
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* --- Getting started & navigation clarity --- */
+.nav-group-block{display:flex;flex-direction:column;gap:8px}
+.nav-group{font-size:12px;font-weight:800;color:var(--bk-text-2);margin:10px 0 2px}
+.nav-group-block:first-child .nav-group{margin-top:0}
+.navlink{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}
+.planned-tag{font-size:11px;font-weight:800;color:var(--bk-blue-700);background:var(--bk-sky-100);border-radius:999px;padding:3px 8px;white-space:nowrap}
+.navlink.on .planned-tag{color:#fff;background:rgba(255,255,255,.18)}
+.sheet-link .planned-tag{margin-left:10px}
+.getting-started{display:flex;flex-direction:column;gap:12px}
+.getting-started summary{font-weight:800;font-size:16px;cursor:pointer;min-height:32px}
+.getting-title{font-size:19px;margin:0}
+.getting-intro{margin:0}
+.getting-note{font-size:13px;margin:0}
+.steps-list{list-style:none;counter-reset:step;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.step-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid var(--bk-border);padding-top:12px}
+.step-row:first-child{border-top:0;padding-top:0}
+.step-main{flex:1;min-width:220px}
+.step-main strong{font-size:15px}
+.help-details{border-top:1px solid var(--bk-border);padding-top:12px;margin-bottom:14px}
+.help-details summary{font-weight:700;font-size:14px;cursor:pointer;min-height:32px}
+.help-details p{margin:8px 0 0;font-size:14px}
+@media (max-width:640px){.step-row{align-items:stretch;flex-direction:column}.step-row .btn{width:100%}}
+/* --- Bucky mascot --- */
+.bucky-button{background:none;border:0;padding:0;cursor:pointer;width:112px;flex:0 0 112px;border-radius:16px}
+.bucky-button:focus-visible{outline:2px solid var(--bk-blue-500);outline-offset:2px}
+.bucky{width:100%;height:auto;display:block;animation:bucky-bob 3.4s ease-in-out infinite}
+.greeting-header{justify-content:flex-start;align-items:center}
+.bucky-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap;border-top:1px solid var(--bk-border);padding-top:16px;margin-bottom:14px}
+.bucky-row .bucky-button{width:120px;flex-basis:120px}
+.bucky-row>div{flex:1;min-width:220px}
+.bucky-eyes{transform-box:fill-box;transform-origin:center;animation:bucky-blink 4.8s infinite}
+.bucky-waving{transform-box:fill-box;transform-origin:85% 90%;animation:bucky-wave 2.2s ease-in-out infinite}
+.bucky.bucky-celebrating{animation:bucky-celebrate .55s ease-in-out 3}
+.bucky-yawn{transform-box:fill-box;transform-origin:center;animation:bucky-yawn 2.6s ease-in-out infinite}
+.bucky-float{animation:bucky-float 2.8s ease-in-out infinite}
+.bucky-zzz{animation:bucky-float 3s ease-in-out infinite}
+@keyframes bucky-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes bucky-blink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.08)}}
+@keyframes bucky-wave{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-16deg)}}
+@keyframes bucky-celebrate{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-12px) scale(1.04)}}
+@keyframes bucky-yawn{0%,100%{transform:scale(.75)}50%{transform:scale(1.12)}}
+@keyframes bucky-float{0%,100%{transform:translateY(0);opacity:.85}50%{transform:translateY(-6px);opacity:1}}
+@media (max-width:640px){.bucky-button{width:84px;flex-basis:84px}.bucky-row .bucky-button{width:96px;flex-basis:96px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

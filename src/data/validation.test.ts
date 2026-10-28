@@ -12,16 +12,32 @@ import {
 } from "./validation.ts";
 import { bucketsRepo, initDb } from "./db.ts";
 import {
+  currencySymbol,
   formatMoney,
   minorUnitsToAmountInput,
   parseAmountToMinorUnits,
 } from "../lib/currency.ts";
 import {
+  bucketGoalProgress,
+  bucketSavedMinor,
   expenseByCategory,
   filterByDateRange,
   monthlyIncomeExpense,
+  savingsMovementError,
   summarizeTransactions,
 } from "../lib/finance.ts";
+import {
+  amountOf,
+  amountsForEdit,
+  bucketCurrencyMismatch,
+  canChangeBucketCurrency,
+  emptyRecordAmounts,
+  isValidCalendarDate,
+  planSaveAmounts,
+  plannedEntryTypes,
+  reinterpretAmountMinor,
+  withAmount,
+} from "../lib/recordForm.ts";
 
 const stamp = "2026-10-27T00:00:00.000Z";
 
@@ -72,6 +88,202 @@ test("buckets reject invalid kind/currency, and create validates before storage"
   assert.throws(() => validateBucket({ ...base, name: " " }), BucketaDataError);
   // Validation runs before any IndexedDB access, so this rejects in Node too.
   await assert.rejects(() => bucketsRepo.create({ ...base, currency: "XX" }), BucketaDataError);
+});
+
+test("bucket goals are optional positive integers, and progress uses only its own currency", () => {
+  const base = {
+    id: "b4", profileId: "p1", name: "Emergency fund", kind: "savings" as const,
+    currency: "PHP", createdAt: stamp, updatedAt: stamp,
+  };
+  assert.equal(validateBucket(base).targetMinor, undefined);
+  assert.equal(validateBucket({ ...base, targetMinor: null }).targetMinor, null);
+  assert.equal(validateBucket({ ...base, targetMinor: 10000000 }).targetMinor, 10000000);
+  assert.throws(() => validateBucket({ ...base, targetMinor: 0 }), BucketaDataError);
+  assert.throws(() => validateBucket({ ...base, targetMinor: -5 }), BucketaDataError);
+  assert.throws(() => validateBucket({ ...base, targetMinor: 10.5 }), BucketaDataError);
+
+  const txn = (id: string, type: "income" | "expense", amountMinor: number, currency = "PHP") => ({
+    id, profileId: "p1", bucketId: "b4", type, amountMinor, currency,
+    date: "2026-10-27", description: id, category: null,
+    origin: "manual" as const, relatedId: null, createdAt: stamp, updatedAt: stamp,
+  });
+  const progress = bucketGoalProgress(
+    [txn("t1", "income", 1500000), txn("t2", "expense", 500000), txn("t3", "income", 999999, "USD")],
+    { ...base, targetMinor: 10000000 },
+  );
+  // ₱10,000.00 of ₱100,000.00 = 10%; the USD record is never mixed in.
+  assert.equal(progress?.savedMinor, 1000000);
+  assert.equal(progress?.percent, 10);
+  assert.equal(bucketGoalProgress([], base), null);
+});
+
+test("savings deposits accumulate, withdrawals reduce, and overdrafts are blocked", () => {
+  const bucket = { id: "b-iphone", currency: "PHP", targetMinor: 5000000 }; // ₱50,000 goal
+  const txn = (
+    id: string,
+    type: "savings-deposit" | "savings-withdrawal" | "income" | "expense",
+    amountMinor: number,
+    currency = "PHP",
+    bucketId: string | null = "b-iphone",
+  ) => ({
+    id, profileId: "p1", bucketId, type, amountMinor, currency,
+    date: "2026-10-27", description: id, category: null,
+    origin: "manual" as const, relatedId: null, createdAt: stamp, updatedAt: stamp,
+  });
+
+  // Repeated ₱10,000 deposits accumulate instead of overwriting.
+  const deposits = [txn("d1", "savings-deposit", 1000000), txn("d2", "savings-deposit", 1000000)];
+  assert.equal(bucketSavedMinor(deposits, bucket), 2000000);
+  assert.deepEqual(bucketGoalProgress(deposits, bucket), { savedMinor: 2000000, percent: 40 });
+  assert.equal(validateTransaction(deposits[0]).type, "savings-deposit");
+
+  // A ₱5,000 withdrawal reduces the saved amount and the goal percentage.
+  const afterWithdrawal = [...deposits, txn("w1", "savings-withdrawal", 500000)];
+  assert.equal(bucketSavedMinor(afterWithdrawal, bucket), 1500000);
+  assert.equal(bucketGoalProgress(afterWithdrawal, bucket)?.percent, 30);
+
+  // Withdrawing exactly the saved amount is allowed; one centavo more is not.
+  assert.equal(savingsMovementError(afterWithdrawal, bucket, "savings-withdrawal", 1500000), null);
+  assert.match(
+    savingsMovementError(afterWithdrawal, bucket, "savings-withdrawal", 1500001) ?? "",
+    /exceeds/,
+  );
+  assert.match(savingsMovementError(afterWithdrawal, bucket, "savings-deposit", 0) ?? "", /greater than zero/);
+
+  // Currency separation: a USD deposit never fills a PHP goal, and vice versa.
+  const mixed = [...afterWithdrawal, txn("d-usd", "savings-deposit", 1000000, "USD")];
+  assert.equal(bucketSavedMinor(mixed, bucket), 1500000);
+  assert.equal(bucketSavedMinor(mixed, { id: "b-iphone", currency: "USD" }), 1000000);
+
+  // Savings movements are not income, expenses, or net cash flow. Only the
+  // ordinary salary income and grocery expense below may be summarised.
+  const summaries = summarizeTransactions([
+    ...mixed,
+    txn("salary", "income", 8000000, "PHP", null),
+    txn("groceries", "expense", 200000, "PHP", null),
+  ]);
+  assert.deepEqual(summaries, [
+    { currency: "PHP", income: 8000000, expense: 200000, net: 7800000 },
+  ]);
+
+  // Legacy behaviour preserved: assigned income still counts toward a goal.
+  const legacy = [txn("old", "income", 1000000)];
+  assert.equal(bucketSavedMinor(legacy, bucket), 1000000);
+});
+
+test("record form keeps income and expense amounts independent", () => {
+  // Editing an income record fills only the income field.
+  let amounts = amountsForEdit("income", "5000.00");
+  assert.equal(amountOf(amounts, "income"), "5000.00");
+  assert.equal(amountOf(amounts, "expense"), "");
+
+  // Typing on the expense side never changes the income value, and back.
+  amounts = withAmount(amounts, "expense", "500.00");
+  assert.equal(amountOf(amounts, "income"), "5000.00");
+  assert.equal(amountOf(amounts, "expense"), "500.00");
+  amounts = withAmount(amounts, "income", "6000.00");
+  assert.equal(amountOf(amounts, "expense"), "500.00");
+
+  // A fresh form starts with both sides blank.
+  assert.deepEqual(emptyRecordAmounts(), { income: "", expense: "" });
+  // Editing an expense record fills only the expense field.
+  const expenseEdit = amountsForEdit("expense", "250.50");
+  assert.equal(amountOf(expenseEdit, "expense"), "250.50");
+  assert.equal(amountOf(expenseEdit, "income"), "");
+});
+
+test("record form rejects bucket/currency mismatches instead of changing currency", () => {
+  assert.equal(bucketCurrencyMismatch("PHP", "PHP"), null);
+  const mismatch = bucketCurrencyMismatch("USD", "PHP");
+  assert.ok(mismatch?.includes("USD"));
+  assert.ok(mismatch?.includes("PHP"));
+});
+
+test("dual-entry save creates income only, expense only, or both together", () => {
+  const incomeOnly = planSaveAmounts({ income: "10000", expense: "" }, "PHP");
+  assert.deepEqual(incomeOnly, {
+    ok: true,
+    entries: [{ type: "income", amountMinor: 1000000 }],
+  });
+
+  const expenseOnly = planSaveAmounts({ income: "", expense: "7000" }, "PHP");
+  assert.deepEqual(expenseOnly, {
+    ok: true,
+    entries: [{ type: "expense", amountMinor: 700000 }],
+  });
+
+  // The reported scenario: PHP 10,000 income + PHP 7,000 expense, one Save.
+  const both = planSaveAmounts({ income: "10000", expense: "7000" }, "PHP");
+  assert.deepEqual(both, {
+    ok: true,
+    entries: [
+      { type: "income", amountMinor: 1000000 },
+      { type: "expense", amountMinor: 700000 },
+    ],
+  });
+  if (both.ok) {
+    const net = both.entries.reduce(
+      (sum, e) => sum + (e.type === "income" ? e.amountMinor : -e.amountMinor),
+      0,
+    );
+    assert.equal(net, 300000); // net cash flow PHP 3,000.00
+  }
+  assert.deepEqual(plannedEntryTypes({ income: "1", expense: "2" }), [
+    "income",
+    "expense",
+  ]);
+});
+
+test("dual-entry save validates both sides and stays single in edit mode", () => {
+  // An invalid second entry blocks the whole save; nothing is planned.
+  const invalid = planSaveAmounts({ income: "10000", expense: "abc" }, "PHP");
+  assert.equal(invalid.ok, false);
+  if (!invalid.ok) assert.match(invalid.message, /Expense amount/);
+
+  const zero = planSaveAmounts({ income: "0", expense: "" }, "PHP");
+  assert.equal(zero.ok, false);
+
+  const neither = planSaveAmounts({ income: "", expense: "  " }, "PHP");
+  assert.equal(neither.ok, false);
+
+  // Edit mode populates only the edited record's side, so its planned save
+  // remains a single-record operation.
+  const editAmounts = amountsForEdit("expense", "7000");
+  assert.deepEqual(plannedEntryTypes(editAmounts), ["expense"]);
+  assert.deepEqual(planSaveAmounts(editAmounts, "PHP"), {
+    ok: true,
+    entries: [{ type: "expense", amountMinor: 700000 }],
+  });
+});
+
+test("bucket currency can be corrected only with no assigned records", () => {
+  assert.equal(canChangeBucketCurrency(0), true);
+  assert.equal(canChangeBucketCurrency(1), false);
+  assert.equal(canChangeBucketCurrency(5), false);
+  // The mismatch message tells the user the safe unassign-correct-reassign path.
+  assert.ok(bucketCurrencyMismatch("PHP", "USD")?.includes("None"));
+});
+
+test("correcting a currency preserves the amount number with no conversion", () => {
+  // $500.00 (50000 minor, 2 digits) corrected to PHP stays ₱500.00.
+  assert.equal(reinterpretAmountMinor(50000, "USD", "PHP"), 50000);
+  // $500.00 corrected to JPY (0 digits) becomes ¥500, not ¥50,000.
+  assert.equal(reinterpretAmountMinor(50000, "USD", "JPY"), 500);
+  // ¥500 corrected back to USD becomes $500.00.
+  assert.equal(reinterpretAmountMinor(500, "JPY", "USD"), 50000);
+  // Same currency is untouched.
+  assert.equal(reinterpretAmountMinor(12345, "PHP", "PHP"), 12345);
+});
+
+test("record form rejects non-existent calendar dates", () => {
+  assert.equal(isValidCalendarDate("2026-02-28"), true);
+  assert.equal(isValidCalendarDate("2024-02-29"), true); // leap year
+  assert.equal(isValidCalendarDate("2026-02-29"), false);
+  assert.equal(isValidCalendarDate("2026-02-31"), false);
+  assert.equal(isValidCalendarDate("2026-04-31"), false);
+  assert.equal(isValidCalendarDate("2026-13-01"), false);
+  assert.equal(isValidCalendarDate("27/10/2026"), false);
+  assert.equal(isValidCalendarDate(""), false);
 });
 
 test("renaming a business keeps its id/currency, so its buckets stay attached", () => {
@@ -226,6 +438,35 @@ test("sale totals are computed in integers and mismatches are rejected", () => {
     }),
     BucketaDataError,
   );
+});
+
+test("currencySymbol maps bucket currencies to coin symbols without locale inference", () => {
+  // The currencies named for Bucky's coins.
+  assert.equal(currencySymbol("PHP"), "₱");
+  assert.equal(currencySymbol("USD"), "$");
+  assert.equal(currencySymbol("JPY"), "¥");
+  assert.equal(currencySymbol("EUR"), "€");
+  assert.equal(currencySymbol("GBP"), "£");
+  assert.equal(currencySymbol("KRW"), "₩");
+  assert.equal(currencySymbol("INR"), "₹");
+
+  // Codes are normalised; the result never depends on device locale.
+  assert.equal(currencySymbol(" php "), "₱");
+  assert.equal(currencySymbol("thb"), "฿");
+
+  // Other valid currencies get a distinct symbol or a readable ISO code,
+  // never a bare ambiguous sign borrowed from another currency.
+  const other = currencySymbol("AUD");
+  assert.ok(other === "A$" || other === "AUD", `unexpected AUD symbol: ${other}`);
+  assert.notEqual(currencySymbol("CAD"), "$");
+
+  // Malformed or empty codes yield no symbol, so Bucky shows its
+  // neutral coin emblem instead of a wrong currency mark.
+  assert.equal(currencySymbol(""), "");
+  assert.equal(currencySymbol("   "), "");
+  assert.equal(currencySymbol("P1"), "");
+  assert.equal(currencySymbol("PHPX"), "");
+  assert.equal(currencySymbol("12"), "");
 });
 
 test("database init fails safely when IndexedDB is unavailable (Node)", async () => {

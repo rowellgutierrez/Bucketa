@@ -77,12 +77,19 @@ export function validateBucket(r: Bucket): Bucket {
   if (!r.profileId) fail("bucket profileId is required.");
   if (!["savings", "budget", "allocated"].includes(r.kind)) fail("bucket kind is invalid.");
   assertCurrency(r.currency);
+  if (r.targetMinor !== undefined && r.targetMinor !== null) {
+    assertMinorUnits(r.targetMinor, "targetMinor", { positive: true });
+  }
   return r;
 }
 
 export function validateTransaction(r: Transaction): Transaction {
   if (!r.profileId) fail("transaction profileId is required.");
-  if (!["income", "expense", "transfer", "sale"].includes(r.type)) {
+  if (
+    !["income", "expense", "transfer", "sale", "savings-deposit", "savings-withdrawal"].includes(
+      r.type,
+    )
+  ) {
     fail("transaction type is invalid.");
   }
   assertMinorUnits(r.amountMinor, "amountMinor", { positive: true });

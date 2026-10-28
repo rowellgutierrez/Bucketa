@@ -11,15 +11,15 @@ import ScannerPage from "./pages/ScannerPage";
 import SettingsPage from "./pages/SettingsPage";
 
 const ROUTES: Route[] = [
-  { id: "dashboard", label: "Dashboard", shortLabel: "Home" },
-  { id: "personal", label: "Personal Finance", shortLabel: "Personal" },
-  { id: "buckets", label: "Business Buckets", shortLabel: "Buckets" },
-  { id: "transactions", label: "Transactions", shortLabel: "Records" },
-  { id: "products", label: "Products and Inventory", shortLabel: "Products" },
-  { id: "pos", label: "Sales / POS", shortLabel: "POS" },
-  { id: "employees", label: "Employees and Salaries", shortLabel: "Staff" },
-  { id: "scanner", label: "AI Record Scanner", shortLabel: "Scanner" },
-  { id: "settings", label: "Settings", shortLabel: "Settings" },
+  { id: "dashboard", label: "Dashboard", shortLabel: "Home", group: "Overview" },
+  { id: "personal", label: "Personal Finance", shortLabel: "Personal", group: "Track money" },
+  { id: "transactions", label: "Transactions", shortLabel: "Records", group: "Track money" },
+  { id: "buckets", label: "Business Buckets", shortLabel: "Buckets", group: "Track money" },
+  { id: "products", label: "Products and Inventory", shortLabel: "Products", group: "Business tools", planned: true },
+  { id: "pos", label: "Sales / POS", shortLabel: "POS", group: "Business tools", planned: true },
+  { id: "employees", label: "Employees and Salaries", shortLabel: "Staff", group: "Business tools", planned: true },
+  { id: "scanner", label: "AI Record Scanner", shortLabel: "Scanner", group: "Business tools", planned: true },
+  { id: "settings", label: "Settings", shortLabel: "Settings", group: "General", planned: true },
 ];
 
 function routeFromHash(): string {

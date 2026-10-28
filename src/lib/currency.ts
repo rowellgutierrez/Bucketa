@@ -33,6 +33,54 @@ export function isValidCurrency(code: string): boolean {
   }
 }
 
+/** Well-known unambiguous currency symbols, keyed by ISO 4217 code. */
+const KNOWN_CURRENCY_SYMBOLS: Record<string, string> = {
+  PHP: "₱",
+  USD: "$",
+  JPY: "¥",
+  EUR: "€",
+  GBP: "£",
+  KRW: "₩",
+  INR: "₹",
+  THB: "฿",
+  VND: "₫",
+  ILS: "₪",
+  TRY: "₺",
+  UAH: "₴",
+};
+
+/** Generic signs shared by several currencies; never shown for unlisted codes. */
+const AMBIGUOUS_CURRENCY_SYMBOLS = new Set(["$", "¥", "£", "₽", "kr"]);
+
+/**
+ * The symbol or readable code to emboss on a coin for an ISO 4217 currency
+ * code, e.g. "₱" for PHP and "$" for USD. Selection depends only on the
+ * given code, never on country or device locale: well-known currencies use
+ * their symbol, other valid currencies use their distinct Intl symbol when
+ * it is unambiguous and otherwise their ISO code, and malformed or empty
+ * codes return an empty string. A fixed "en" locale is used for the Intl
+ * lookup so results are deterministic.
+ */
+export function currencySymbol(code: string): string {
+  const normalized = code.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) return "";
+  const known = KNOWN_CURRENCY_SYMBOLS[normalized];
+  if (known) return known;
+  if (!isValidCurrency(normalized)) return "";
+  try {
+    const symbol =
+      new Intl.NumberFormat("en", { style: "currency", currency: normalized })
+        .formatToParts(0)
+        .find((part) => part.type === "currency")?.value ?? "";
+    if (!symbol || symbol === normalized || AMBIGUOUS_CURRENCY_SYMBOLS.has(symbol)) {
+      return normalized;
+    }
+    return symbol;
+  } catch {
+    return "";
+  }
+}
+
 /** Number of minor-unit digits for a currency (PHP/USD: 2, KRW/JPY: 0). */
 export function minorUnitDigits(currency: CurrencyCode = DEFAULT_CURRENCY): number {
   const options = new Intl.NumberFormat(DEFAULT_LOCALE, {

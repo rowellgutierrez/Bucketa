@@ -67,6 +67,76 @@ export function monthlyIncomeExpense(
   return [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
 
+export interface GoalProgress {
+  /** Saved amount for the bucket in its currency; see bucketSavedMinor. */
+  savedMinor: MinorUnits;
+  /** 0–100, clamped. Negative saved counts as 0. */
+  percent: number;
+}
+
+export type SavingsMovementType = Extract<
+  Transaction["type"],
+  "savings-deposit" | "savings-withdrawal"
+>;
+
+/**
+ * Amount currently saved in one bucket, in the bucket's own currency only.
+ * Legacy assigned income/expense records keep counting exactly as before;
+ * savings deposits add and savings withdrawals subtract. Savings movements
+ * are never income or expenses. Currencies never mix.
+ */
+export function bucketSavedMinor(
+  transactions: Transaction[],
+  bucket: { id: string; currency: string },
+): MinorUnits {
+  let saved = 0;
+  for (const txn of transactions) {
+    if (txn.bucketId !== bucket.id || txn.currency !== bucket.currency) continue;
+    if (txn.type === "income" || txn.type === "savings-deposit") saved += txn.amountMinor;
+    else if (txn.type === "expense" || txn.type === "savings-withdrawal") {
+      saved -= txn.amountMinor;
+    }
+  }
+  return saved;
+}
+
+/**
+ * Validates a savings movement against the bucket's saved amount. Returns an
+ * error message, or null when the movement may be saved. A withdrawal may
+ * never exceed the amount currently saved in that bucket and currency.
+ */
+export function savingsMovementError(
+  transactions: Transaction[],
+  bucket: { id: string; currency: string },
+  type: SavingsMovementType,
+  amountMinor: number,
+): string | null {
+  if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    return "Amount must be a valid amount greater than zero.";
+  }
+  if (type === "savings-withdrawal") {
+    const saved = bucketSavedMinor(transactions, bucket);
+    if (amountMinor > saved) return "Withdrawal exceeds the amount saved in this bucket.";
+  }
+  return null;
+}
+
+/**
+ * Savings progress for one bucket with a goal, in the bucket's own currency
+ * only. Returns null when the bucket has no goal. Currencies never mix.
+ */
+export function bucketGoalProgress(
+  transactions: Transaction[],
+  bucket: { id: string; currency: string; targetMinor?: number | null },
+): GoalProgress | null {
+  if (!bucket.targetMinor || bucket.targetMinor <= 0) return null;
+  const saved = bucketSavedMinor(transactions, bucket);
+  return {
+    savedMinor: saved,
+    percent: Math.min(100, Math.max(0, (saved / bucket.targetMinor) * 100)),
+  };
+}
+
 /** Expense totals by category for one currency, largest first. */
 export function expenseByCategory(
   transactions: Transaction[],

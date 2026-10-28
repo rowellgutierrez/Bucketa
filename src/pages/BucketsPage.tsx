@@ -8,7 +8,7 @@ import {
   salesRepo,
   transactionsRepo,
 } from "../data/db";
-import type { Bucket, BucketKind, Profile } from "../data/types";
+import type { Bucket, BucketKind, Profile, Transaction } from "../data/types";
 import {
   BucketaDataError,
   newId,
@@ -17,8 +17,18 @@ import {
   validateProfile,
 } from "../data/validation";
 import { DEFAULT_CURRENCY, DEFAULT_LOCALE } from "../config";
-import { FEATURED_CURRENCIES, isValidCurrency } from "../lib/currency";
+import {
+  FEATURED_CURRENCIES,
+  formatMoney,
+  isValidCurrency,
+  minorUnitsToAmountInput,
+  parseAmountToMinorUnits,
+} from "../lib/currency";
+import { canChangeBucketCurrency } from "../lib/recordForm";
+import { bucketGoalProgress } from "../lib/finance";
+import Bucky from "../components/Bucky";
 import BusinessReport, { type BusinessReportData } from "../components/BusinessReport";
+
 
 const KIND_LABELS: Record<BucketKind, string> = {
   savings: "Savings",
@@ -62,6 +72,9 @@ export default function BucketsPage() {
   const [creatingProfile, setCreatingProfile] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [renameName, setRenameName] = useState("");
+  const [renameCurrency, setRenameCurrency] = useState<string>(DEFAULT_CURRENCY);
+  const [editingBucketId, setEditingBucketId] = useState("");
+  const [goalConfirmed, setGoalConfirmed] = useState(false);
   const [renameError, setRenameError] = useState("");
   const [renaming, setRenaming] = useState(false);
 
@@ -79,6 +92,9 @@ export default function BucketsPage() {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<BucketKind>("budget");
   const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
+  const [target, setTarget] = useState("");
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [celebrateKey, setCelebrateKey] = useState(0);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
@@ -92,8 +108,12 @@ export default function BucketsPage() {
   }
 
   async function loadBuckets(forProfileId: string) {
-    const list = await bucketsRepo.listByProfile(forProfileId);
+    const [list, txns] = await Promise.all([
+      bucketsRepo.listByProfile(forProfileId),
+      transactionsRepo.listByProfile(forProfileId),
+    ]);
     setBuckets([...list].sort(byCreatedAt));
+    setTransactions(txns);
   }
 
   async function load(preferredProfileId = "") {
@@ -194,9 +214,27 @@ export default function BucketsPage() {
     }
   }
 
+  function startEditBucket(bucket: Bucket) {
+    setEditingBucketId(bucket.id);
+    setName(bucket.name);
+    setKind(bucket.kind);
+    setCurrency(bucket.currency);
+    setTarget(bucket.targetMinor ? minorUnitsToAmountInput(bucket.targetMinor, bucket.currency) : "");
+    setGoalConfirmed(false);
+    setFieldErrors({});
+    setFormError("");
+    setDeleteTarget(null);
+    setShowBucketForm(true);
+  }
+
+  function assignedCount(bucketId: string): number {
+    return transactions.filter((t) => t.bucketId === bucketId).length;
+  }
+
   function startRename(profile: Profile) {
     setEditingId(profile.id);
     setRenameName(profile.name);
+    setRenameCurrency(profile.currency);
     setRenameError("");
     setProfileError("");
     setProfileNotice("");
@@ -209,18 +247,27 @@ export default function BucketsPage() {
       setRenameError("Business name is required.");
       return;
     }
-    if (trimmed === profile.name) {
+    const normalizedCurrency = renameCurrency.trim().toUpperCase();
+    if (!isCurrency(normalizedCurrency)) {
+      setRenameError("Enter a valid ISO 4217 currency code, e.g. PHP.");
+      return;
+    }
+    if (trimmed === profile.name && normalizedCurrency === profile.currency) {
       setEditingId("");
       return;
     }
     setRenaming(true);
     try {
-      const updated = await profilesRepo.update(profile.id, { name: trimmed });
+      const updated = await profilesRepo.update(profile.id, {
+        name: trimmed,
+        currency: normalizedCurrency,
+      });
       setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      if (updated.id === profileId) setCurrency(updated.currency);
       if (deleteTarget?.id === updated.id) setDeleteTarget(updated);
       setEditingId("");
       setProfileNotice(
-        `Business renamed to “${updated.name}”. Its buckets and records are unchanged.`,
+        `Business “${updated.name}” saved. Its default currency is now ${updated.currency}; existing buckets and records keep their own currencies — nothing was converted.`,
       );
     } catch (error) {
       setRenameError(errorMessage(error));
@@ -302,13 +349,68 @@ export default function BucketsPage() {
     if (!isCurrency(normalizedCurrency)) {
       errors.currency = "Enter a valid ISO 4217 currency code, e.g. PHP.";
     }
+    let targetMinor: number | null = null;
+    if (target.trim()) {
+      try {
+        targetMinor = parseAmountToMinorUnits(target, normalizedCurrency);
+        if (targetMinor <= 0) errors.target = "Goal must be greater than zero, or blank for no goal.";
+      } catch (error) {
+        errors.target = errorMessage(error);
+      }
+    }
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
     const stamp = nowIso();
+    const editingBucket = buckets.find((b) => b.id === editingBucketId);
+    if (editingBucket) {
+      const assigned = assignedCount(editingBucket.id);
+      const currencyChanged = normalizedCurrency !== editingBucket.currency;
+      if (currencyChanged && !canChangeBucketCurrency(assigned)) {
+        setFormError(
+          `This bucket's currency cannot be changed because ${assigned} ` +
+            `${assigned === 1 ? "record is" : "records are"} assigned to it. ` +
+            `To correct it: in Transactions, edit each assigned record, set ` +
+            `its bucket to None, correct and save its currency, then change ` +
+            `this bucket's currency and reassign the records. No record is ` +
+            `changed automatically.`,
+        );
+        return;
+      }
+      if (currencyChanged && editingBucket.targetMinor && !goalConfirmed) {
+        setFormError(
+          "Review the goal amount below and confirm it before changing the " +
+            "currency. The same goal number will be read in the new currency " +
+            "with no conversion.",
+        );
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const updated = await bucketsRepo.update(editingBucket.id, {
+          name: trimmedName, kind, currency: normalizedCurrency, targetMinor,
+        });
+        setBuckets((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+        setEditingBucketId("");
+        setShowBucketForm(false);
+        setTarget("");
+        setGoalConfirmed(false);
+        setNotice(
+          currencyChanged
+            ? `Bucket “${updated.name}” is now in ${updated.currency}. Existing records were not changed or converted.`
+            : `Bucket “${updated.name}” updated.`,
+        );
+      } catch (error) {
+        setFormError(errorMessage(error));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     const bucket: Bucket = {
       id: newId(), profileId, name: trimmedName, kind,
-      currency: normalizedCurrency, createdAt: stamp, updatedAt: stamp,
+      currency: normalizedCurrency, targetMinor, createdAt: stamp, updatedAt: stamp,
     };
     setSubmitting(true);
     try {
@@ -320,6 +422,8 @@ export default function BucketsPage() {
       setFieldErrors({});
       setShowBucketForm(false);
       setNotice(`Bucket “${bucket.name}” created.`);
+      setTarget("");
+      setCelebrateKey((k) => k + 1);
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -340,7 +444,7 @@ export default function BucketsPage() {
         <div>
           <h1>Business Buckets</h1>
           <p className="muted dash-subtitle">
-            Buckets for the selected business. Data is stored only in this browser.
+            Buckets are envelopes inside one business — for example Rent, Supplies, or Tax — so each part of the business money has a job.
           </p>
         </div>
         {activeProfile && (
@@ -397,7 +501,7 @@ export default function BucketsPage() {
                   onClick={() => startRename(activeProfile)}
                   aria-expanded={editingId === activeProfile.id}
                 >
-                  Rename
+                  Edit business
                 </button>
                 <button
                   className="btn ghost small"
@@ -430,7 +534,7 @@ export default function BucketsPage() {
             <form className="card inline-form" onSubmit={(e) => void onRename(e, activeProfile)}>
               <div className="field">
                 <label htmlFor={`rename-${activeProfile.id}`}>
-                  Rename “{activeProfile.name}”
+                  Edit “{activeProfile.name}”
                 </label>
                 <input
                   id={`rename-${activeProfile.id}`}
@@ -446,14 +550,30 @@ export default function BucketsPage() {
                 {renameError ? (
                   <p className="field-error" id="rename-error">{renameError}</p>
                 ) : (
-                  <p className="field-hint" id="rename-hint">
-                    Only the name changes. Buckets and records stay attached.
+                  <>
+                  <label htmlFor="rename-currency">Default currency</label>
+                <input
+                  id="rename-currency"
+                  className="input"
+                  type="text"
+                  value={renameCurrency}
+                  onChange={(e) =>
+                    setRenameCurrency(e.target.value.replace(/[^a-z]/gi, "").toUpperCase())
+                  }
+                  placeholder="PHP"
+                  maxLength={3}
+                  list="featured-currencies"
+                  autoComplete="off"
+                />
+                <p className="field-hint" id="rename-hint">
+                    Currency here is only the default for new buckets and records. Existing buckets and records keep their own currency — nothing is converted.
                   </p>
+                  </>
                 )}
               </div>
               <div className="row-actions">
                 <button className="btn small" type="submit" disabled={renaming}>
-                  {renaming ? "Saving…" : "Save name"}
+                  {renaming ? "Saving…" : "Save changes"}
                 </button>
                 <button
                   className="btn ghost small"
@@ -634,7 +754,7 @@ export default function BucketsPage() {
 
               {showBucketForm && (
                 <form className="inline-form bucket-create" onSubmit={onSubmit} noValidate>
-                  <h3>Create a bucket for {activeProfile.name}</h3>
+                  <h3>{editingBucketId ? "Edit bucket" : `Create a bucket for ${activeProfile.name}`}</h3>
                   <div className="field">
                     <label htmlFor="bucket-name">Bucket name</label>
                     <input
@@ -655,6 +775,7 @@ export default function BucketsPage() {
                   <div className="form-row">
                     <div className="field">
                       <label htmlFor="bucket-kind">Type</label>
+                      <p className="field-hint">Savings: set aside · Budget: planned spending · Allocated: a specific purpose</p>
                       <select
                         id="bucket-kind"
                         className="input"
@@ -665,6 +786,27 @@ export default function BucketsPage() {
                           <option key={k} value={k}>{KIND_LABELS[k]}</option>
                         ))}
                       </select>
+                    </div>
+                    <div className="field">
+                      <label htmlFor="bucket-goal">Goal amount (optional)</label>
+                      <input
+                        id="bucket-goal"
+                        className="input"
+                        type="text"
+                        inputMode="decimal"
+                        value={target}
+                        onChange={(e) => setTarget(e.target.value)}
+                        placeholder="e.g. 100000"
+                        aria-invalid={Boolean(fieldErrors.target)}
+                        aria-describedby={fieldErrors.target ? "bucket-goal-error" : "bucket-goal-hint"}
+                      />
+                      {fieldErrors.target ? (
+                        <p className="field-error" id="bucket-goal-error">{fieldErrors.target}</p>
+                      ) : (
+                        <p className="field-hint" id="bucket-goal-hint">
+                          Bucky&apos;s bucket fills toward this goal from records assigned here.
+                        </p>
+                      )}
                     </div>
                     <div className="field">
                       <label htmlFor="bucket-currency">Currency</label>
@@ -699,15 +841,48 @@ export default function BucketsPage() {
                     </div>
                   </div>
                   {formError && <p className="alert-error" role="alert">{formError}</p>}
+                  {editingBucketId &&
+                    (() => {
+                      const original = buckets.find((b) => b.id === editingBucketId);
+                      const assigned = original ? assignedCount(original.id) : 0;
+                      return assigned > 0 ? (
+                        <p className="field-hint">
+                          Currency is locked while {assigned}{" "}
+                          {assigned === 1 ? "record is" : "records are"} assigned to this
+                          bucket. Unassign a record in Transactions (set its bucket to
+                          None) to correct its currency, then reassign it.
+                        </p>
+                      ) : null;
+                    })()}
+                  {editingBucketId &&
+                    (() => {
+                      const original = buckets.find((b) => b.id === editingBucketId);
+                      if (!original?.targetMinor || currency.trim().toUpperCase() === original.currency) return null;
+                      return (
+                        <label className="field-hint">
+                          <input
+                            type="checkbox"
+                            checked={goalConfirmed}
+                            onChange={(e) => setGoalConfirmed(e.target.checked)}
+                          />{" "}
+                          I reviewed the goal amount ({target || "blank"}). It will be read in{" "}
+                          {currency.trim().toUpperCase() || "the new currency"} with no conversion.
+                        </label>
+                      );
+                    })()}
                   {notice && <p className="notice" role="status">{notice}</p>}
                   <div className="row-actions">
                     <button className="btn" type="submit" disabled={submitting}>
-                      {submitting ? "Creating…" : "Create bucket"}
+                      {submitting ? "Saving…" : editingBucketId ? "Save changes" : "Create bucket"}
                     </button>
                     <button
                       className="btn ghost"
                       type="button"
-                      onClick={() => setShowBucketForm(false)}
+                      onClick={() => {
+                        setShowBucketForm(false);
+                        setEditingBucketId("");
+                        setGoalConfirmed(false);
+                      }}
                     >
                       Cancel
                     </button>
@@ -715,12 +890,49 @@ export default function BucketsPage() {
                 </form>
               )}
 
+              {(() => {
+                const goalBucket = buckets.find((b) => bucketGoalProgress(transactions, b));
+                const progress = goalBucket ? bucketGoalProgress(transactions, goalBucket) : null;
+                return (
+                  <div className="bucky-row">
+                    <Bucky variant="savings" fillPercent={progress ? progress.percent : null} currency={goalBucket?.currency} celebrateKey={celebrateKey} />
+                    <div>
+                      <strong>Bucky keeps an eye on {activeProfile.name}&apos;s goals</strong>
+                      {goalBucket && progress ? (
+                        <p className="muted bucket-meta">
+                          {goalBucket.name}: {formatMoney(progress.savedMinor, goalBucket.currency)} of{" "}
+                          {formatMoney(goalBucket.targetMinor ?? 0, goalBucket.currency)} goal ({Math.round(progress.percent)}% full)
+                          {progress.percent >= 100 ? " — goal reached, well done!" : " from records assigned to this bucket."}
+                        </p>
+                      ) : (
+                        <p className="muted bucket-meta">
+                          Set a goal amount when creating a bucket and Bucky&apos;s bucket will fill with coins as business records are assigned to it.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+              <details className="help-details">
+                <summary>What do the bucket types mean?</summary>
+                <p className="muted">
+                  Savings — money set aside. Budget — a planned spending area.
+                  Allocated — money assigned to a specific purpose. Any bucket
+                  total is recorded net cash flow, not a bank or account balance.
+                </p>
+              </details>
+
               {buckets.length === 0 ? (
                 <div className="empty-state dash-empty">
                   <p>No buckets yet for {activeProfile.name}.</p>
                   <p className="muted">
-                    Use Add Bucket to create the first one. No balances are shown
-                    because buckets do not hold amounts yet.
+                    Buckets organise records you assign to them — they do not
+                    hold money by themselves, so no amount is shown until
+                    records are assigned.
+                  </p>
+                  <p className="muted">
+                    Use the Add Bucket button above to create the first one, then record business transactions and assign them to it.
+                    
                   </p>
                 </div>
               ) : (
@@ -731,9 +943,15 @@ export default function BucketsPage() {
                         <strong>{bucket.name}</strong>
                         <p className="muted bucket-meta">
                           {KIND_LABELS[bucket.kind]} · Created {formatDate(bucket.createdAt)}
+                          {bucket.targetMinor
+                            ? ` · Goal ${formatMoney(bucket.targetMinor, bucket.currency)} (${Math.round(bucketGoalProgress(transactions, bucket)?.percent ?? 0)}% full)`
+                            : ""}
                         </p>
                       </div>
                       <span className="currency-badge">{bucket.currency}</span>
+                      <button className="btn ghost small" type="button" onClick={() => startEditBucket(bucket)}>
+                        Edit
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -744,7 +962,7 @@ export default function BucketsPage() {
               <div className="card empty-state">
                 <p>No businesses yet.</p>
                 <p className="muted">
-                  Create your first business above, then add its buckets here.
+                  Use the “Create a business” form above (step 1). After that, add buckets for it here (step 2), then record its income and expenses in Transactions and assign them to a bucket. Each business, its buckets, and its currency stay separate.
                 </p>
               </div>
             )

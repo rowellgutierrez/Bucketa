@@ -5,6 +5,8 @@ export type Route = {
   id: string;
   label: string;
   shortLabel: string;
+  group: string;
+  planned?: boolean;
 };
 
 type Props = {
@@ -16,7 +18,7 @@ type Props = {
   children: ReactNode;
 };
 
-const BOTTOM_IDS = ["dashboard", "buckets", "pos"];
+const BOTTOM_IDS = ["dashboard", "personal", "buckets"];
 
 export default function Shell({ routes, active, onNavigate, dark, onToggleTheme, children }: Props) {
   const [moreOpen, setMoreOpen] = useState(false);
@@ -37,15 +39,23 @@ export default function Shell({ routes, active, onNavigate, dark, onToggleTheme,
           <span>Bucketa</span>
         </div>
         <nav aria-label="Primary">
-          {routes.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              className={r.id === active ? "navlink on" : "navlink"}
-              onClick={() => go(r.id)}
-            >
-              {r.label}
-            </button>
+          {[...new Set(routes.map((r) => r.group))].map((group) => (
+            <div key={group} className="nav-group-block">
+              <p className="nav-group">{group}</p>
+              {routes
+                .filter((r) => r.group === group)
+                .map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className={r.id === active ? "navlink on" : "navlink"}
+                    onClick={() => go(r.id)}
+                  >
+                    <span>{r.label}</span>
+                    {r.planned && <span className="planned-tag">Planned</span>}
+                  </button>
+                ))}
+            </div>
           ))}
         </nav>
         <button className="btn ghost small theme-btn" type="button" onClick={onToggleTheme}>
@@ -74,6 +84,7 @@ export default function Shell({ routes, active, onNavigate, dark, onToggleTheme,
               onClick={() => go(r.id)}
             >
               {r.label}
+              {r.planned && <span className="planned-tag">Planned</span>}
             </button>
           ))}
           <button type="button" className="sheet-link" onClick={() => setMoreOpen(false)}>

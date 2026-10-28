@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Profile, Transaction } from "../data/types";
+import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
 import { formatMoney } from "../lib/currency";
 import {
+  bucketGoalProgress,
   expenseByCategory,
   filterByDateRange,
   monthlyIncomeExpense,
   summarizeTransactions,
 } from "../lib/finance";
+import Bucky from "../components/Bucky";
 
 type Status = "loading" | "ready" | "error";
 type View = "personal" | "business" | "all";
@@ -165,13 +168,68 @@ export default function DashboardPage() {
     id ? (buckets.find((b) => b.id === id)?.name ?? "Unknown bucket") : null;
   const hasAnyTransactions = transactions.length > 0;
 
+  // Contextual next steps: only what is actually missing, never recreating
+  // profiles, buckets, or records that already exist.
+  const personalIds = new Set(personalProfiles.map((p) => p.id));
+  const businessIds = new Set(businessProfiles.map((p) => p.id));
+  const hasPersonalTxn = transactions.some((t) => personalIds.has(t.profileId));
+  const hasBusinessTxn = transactions.some((t) => businessIds.has(t.profileId));
+  const businessWithoutBuckets = businessProfiles.find(
+    (p) => !buckets.some((b) => b.profileId === p.id),
+  );
+  const startSteps: StartStep[] = [];
+  if (personalProfiles.length === 0) {
+    startSteps.push({
+      title: "Set up your personal money",
+      text: "Create a personal profile, then record your own income and expenses — kept separate from any business.",
+      cta: "Set up Personal Finance",
+      href: "#/personal",
+    });
+  } else if (!hasPersonalTxn) {
+    startSteps.push({
+      title: "Add your first personal record",
+      text: "Your personal profile is ready. Record personal income or an expense to start your cash-flow summary.",
+      cta: "Add a personal record",
+      href: "#/personal",
+    });
+  }
+  if (businessProfiles.length === 0) {
+    startSteps.push({
+      title: "Create a business (optional)",
+      text: "If you run a business, create it here, then organise its money into buckets such as Rent or Supplies.",
+      cta: "Create a business",
+      href: "#/buckets",
+    });
+  } else if (businessWithoutBuckets) {
+    startSteps.push({
+      title: `Add buckets for ${businessWithoutBuckets.name}`,
+      text: "This business has no buckets yet. Buckets are envelopes that give business money a job, e.g. Rent or Tax.",
+      cta: "Add buckets",
+      href: "#/buckets",
+    });
+  } else if (!hasBusinessTxn) {
+    startSteps.push({
+      title: "Record business income or expenses",
+      text: "Your business and buckets are ready. Record business transactions and assign them to a bucket.",
+      cta: "Record a business transaction",
+      href: "#/transactions",
+    });
+  }
+
   return (
     <section className="page finance-page">
-      <header className="dash-header">
+      <header className="dash-header greeting-header">
+        <Bucky
+          variant="greeting"
+          celebrateKey={
+            buckets.some((b) => (bucketGoalProgress(transactions, b)?.percent ?? 0) >= 100) ? 1 : 0
+          }
+        />
         <div>
-          <h1>Dashboard</h1>
+          <h1>{personalProfiles[0] ? `Hello, ${personalProfiles[0].name}!` : "Hello!"}</h1>
           <p className="muted dash-subtitle">
-            Your recorded income and expenses. Currencies are always kept separate.
+            Bucketa tracks the income and expenses you record — personal and
+            business separately, and each currency separately.
           </p>
         </div>
       </header>
@@ -186,6 +244,24 @@ export default function DashboardPage() {
 
       {status === "ready" && (
         <>
+          {!hasAnyTransactions ? (
+            <GettingStarted
+              title="Welcome to Bucketa"
+              intro="Start with whichever applies to you. You can do these in any order, and this guidance updates as you add profiles, buckets, and records."
+              steps={startSteps}
+            />
+          ) : (
+            startSteps.length > 0 && (
+              <GettingStarted
+                collapsed
+                title="Getting started — next steps"
+                intro="Only steps you have not done yet are listed."
+                steps={startSteps}
+              />
+            )
+          )}
+
+          {hasAnyTransactions && (
           <div className="selector-bar dash-controls">
             <div className="selector-main">
               <span className="type-toggle" role="group" aria-label="Dashboard view">
@@ -254,23 +330,27 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
+          )}
 
-          {!hasAnyTransactions ? (
-            <div className="card empty-state">
-              <p>No transactions recorded yet.</p>
-              <p className="muted">
-                Add income and expenses on the <a href="#/transactions">Transactions page</a>{" "}
-                or in <a href="#/personal">Personal Finance</a>. Summaries and charts
-                will appear here from your real records — nothing is estimated.
-              </p>
-            </div>
-          ) : scoped.length === 0 ? (
+          {!hasAnyTransactions ? null : scoped.length === 0 ? (
             <div className="card empty-state">
               <p>No records in this view for the selected dates.</p>
               <p className="muted">
-                Try a wider date range or another view. Records from other
-                businesses or personal profiles are not mixed in.
+                Records in other views or dates are not mixed in. Showing
+                everything usually finds them.
               </p>
+              <div className="row-actions">
+                <button
+                  className="btn ghost small"
+                  type="button"
+                  onClick={() => {
+                    setView("all");
+                    setPreset("all");
+                  }}
+                >
+                  Show all records
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -282,10 +362,16 @@ export default function DashboardPage() {
                       <dl>
                         <div><dt>Income</dt><dd className="amount-in">{formatMoney(s.income, s.currency)}</dd></div>
                         <div><dt>Expenses</dt><dd className="amount-out">{formatMoney(s.expense, s.currency)}</dd></div>
-                        <div><dt>Net</dt><dd className={s.net < 0 ? "amount-out" : "amount-in"}>{formatMoney(s.net, s.currency)}</dd></div>
+                        <div><dt>Net cash flow</dt><dd className={s.net < 0 ? "amount-out" : "amount-in"}>{formatMoney(s.net, s.currency)}</dd></div>
                       </dl>
                     </div>
                   ))}
+                  <p className="muted txn-summary-note">
+                    Net cash flow is recorded income minus recorded expenses for
+                    the selected records. It is not a bank or account balance —
+                    Bucketa only knows amounts you record here, including any
+                    opening amount you choose to record as income.
+                  </p>
                 </section>
               ) : (
                 <div className="card empty-state">

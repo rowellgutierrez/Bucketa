@@ -15,6 +15,18 @@ import {
   minorUnitsToAmountInput,
   parseAmountToMinorUnits,
 } from "../lib/currency";
+import {
+  amountOf,
+  amountsForEdit,
+  bucketCurrencyMismatch,
+  emptyRecordAmounts,
+  isValidCalendarDate,
+  planSaveAmounts,
+  plannedEntryTypes,
+  withAmount,
+  type PlannedEntry,
+  type RecordAmounts,
+} from "../lib/recordForm";
 
 type Status = "loading" | "ready" | "error";
 type EntryType = "income" | "expense";
@@ -24,6 +36,8 @@ const TYPE_LABELS: Record<Transaction["type"], string> = {
   expense: "Expense",
   transfer: "Transfer",
   sale: "Sale",
+  "savings-deposit": "Savings deposit",
+  "savings-withdrawal": "Savings withdrawal",
 };
 
 function errorMessage(error: unknown): string {
@@ -66,7 +80,7 @@ export default function TransactionsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [type, setType] = useState<EntryType>("expense");
-  const [amount, setAmount] = useState("");
+  const [amounts, setAmounts] = useState<RecordAmounts>(emptyRecordAmounts);
   const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [category, setCategory] = useState("");
   const [date, setDate] = useState(todayInputValue);
@@ -152,7 +166,7 @@ export default function TransactionsPage() {
   function resetForm(nextCurrency: string) {
     setEditingId("");
     setType("expense");
-    setAmount("");
+    setAmounts(emptyRecordAmounts());
     setCurrency(nextCurrency);
     setCategory("");
     setDate(todayInputValue());
@@ -191,9 +205,14 @@ export default function TransactionsPage() {
     setType(txn.type as EntryType);
     setCurrency(txn.currency);
     try {
-      setAmount(minorUnitsToAmountInput(txn.amountMinor, txn.currency));
+      setAmounts(
+        amountsForEdit(
+          txn.type as EntryType,
+          minorUnitsToAmountInput(txn.amountMinor, txn.currency),
+        ),
+      );
     } catch {
-      setAmount("");
+      setAmounts(emptyRecordAmounts());
     }
     setCategory(txn.category ?? "");
     setDate(txn.date.slice(0, 10));
@@ -207,11 +226,9 @@ export default function TransactionsPage() {
   }
 
   function onSelectBucket(id: string) {
+    // Selecting a bucket never changes the record's currency; a mismatch
+    // is reported as a validation error on save instead.
     setBucketId(id);
-    const bucket = buckets.find((b) => b.id === id);
-    // A bucket's transactions default to that bucket's own currency;
-    // with no bucket, fall back to the business currency.
-    setCurrency(bucket ? bucket.currency : (activeProfile?.currency ?? DEFAULT_CURRENCY));
   }
 
   async function onSubmit(event: FormEvent) {
@@ -227,25 +244,39 @@ export default function TransactionsPage() {
     const trimmedDescription = description.trim();
     let amountMinor: number | null = null;
 
+    let planned: PlannedEntry[] = [];
+    const isEditing = Boolean(transactions.find((t) => t.id === editingId));
     if (!/^[A-Z]{3}$/.test(normalizedCurrency) || !isValidCurrency(normalizedCurrency)) {
       errors.currency = "Enter a valid ISO 4217 currency code, e.g. PHP.";
-    } else {
+    } else if (isEditing) {
       try {
-        amountMinor = parseAmountToMinorUnits(amount, normalizedCurrency);
+        amountMinor = parseAmountToMinorUnits(amountOf(amounts, type), normalizedCurrency);
         if (amountMinor <= 0) errors.amount = "Amount must be greater than zero.";
       } catch (error) {
         errors.amount = errorMessage(error);
       }
+    } else {
+      // Create mode: validate BOTH entered sides before saving anything.
+      const plan = planSaveAmounts(amounts, normalizedCurrency);
+      if (!plan.ok) errors.amount = plan.message;
+      else planned = plan.entries;
     }
     if (!trimmedDescription) errors.description = "Description is required.";
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00`).getTime())) {
+    if (!isValidCalendarDate(date)) {
       errors.date = "Enter a valid date.";
     }
-    if (bucketId && !buckets.some((b) => b.id === bucketId)) {
+    const selectedBucket = bucketId ? buckets.find((b) => b.id === bucketId) : undefined;
+    if (bucketId && !selectedBucket) {
       errors.bucket = "That bucket does not belong to this business.";
+    } else if (selectedBucket) {
+      const mismatch = bucketCurrencyMismatch(selectedBucket.currency, normalizedCurrency);
+      if (mismatch) errors.bucket = mismatch;
     }
     setFieldErrors(errors);
-    if (Object.keys(errors).length > 0 || amountMinor === null) return;
+    if (Object.keys(errors).length > 0) return;
+    if (isEditing && amountMinor === null) return;
+    if (!isEditing && planned.length === 0) return;
+    if (submitting) return;
 
     const editing = transactions.find((t) => t.id === editingId);
     setSubmitting(true);
@@ -254,9 +285,14 @@ export default function TransactionsPage() {
         if (!isEditable(editing)) {
           throw new BucketaDataError("This record cannot be edited here.");
         }
+        if (amountMinor === null || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+          setFormError("Enter a valid amount greater than zero.");
+          return;
+        }
+        const validAmountMinor = amountMinor;
         const updated = await transactionsRepo.update(editing.id, {
           type,
-          amountMinor,
+          amountMinor: validAmountMinor,
           currency: normalizedCurrency,
           date,
           description: trimmedDescription,
@@ -270,30 +306,61 @@ export default function TransactionsPage() {
         );
         setNotice("Transaction updated.");
       } else {
-        const stamp = nowIso();
-        const txn: Transaction = {
-          id: newId(),
-          profileId: activeProfile.id,
-          bucketId: bucketId || null,
-          type,
-          amountMinor,
-          currency: normalizedCurrency,
-          date,
-          description: trimmedDescription,
-          category: category.trim() || null,
-          origin: "manual",
-          relatedId: null,
-          createdAt: stamp,
-          updatedAt: stamp,
-        };
-        validateTransaction(txn);
-        await transactionsRepo.create(txn);
-        setTransactions((prev) =>
-          [txn, ...prev].sort(
-            (a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
-          ),
+        // One transaction per entered side, each with its own type/amount.
+        const created: Transaction[] = [];
+        let failed: { type: EntryType; message: string } | null = null;
+        for (const entry of planned) {
+          const stamp = nowIso();
+          const txn: Transaction = {
+            id: newId(),
+            profileId: activeProfile.id,
+            bucketId: bucketId || null,
+            type: entry.type,
+            amountMinor: entry.amountMinor,
+            currency: normalizedCurrency,
+            date,
+            description: trimmedDescription,
+            category: category.trim() || null,
+            origin: "manual",
+            relatedId: null,
+            createdAt: stamp,
+            updatedAt: stamp,
+          };
+          try {
+            validateTransaction(txn);
+            await transactionsRepo.create(txn);
+            created.push(txn);
+          } catch (error) {
+            failed = { type: entry.type, message: errorMessage(error) };
+            break;
+          }
+        }
+        if (created.length > 0) {
+          setTransactions((prev) =>
+            [...created, ...prev].sort(
+              (a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
+            ),
+          );
+        }
+        if (failed) {
+          // Keep only the unsaved sides in the form; never claim both saved.
+          const savedTypes = new Set(created.map((t) => t.type));
+          setAmounts((prev) => ({
+            income: savedTypes.has("income") ? "" : prev.income,
+            expense: savedTypes.has("expense") ? "" : prev.expense,
+          }));
+          setFormError(
+            created.length > 0
+              ? `${created.map((t) => (t.type === "income" ? "Income" : "Expense")).join(", ")} saved, but the ${failed.type} entry could not be saved: ${failed.message} It is still entered above — fix it and save again.`
+              : `Could not save the ${failed.type} entry: ${failed.message} Nothing was saved.`,
+          );
+          return;
+        }
+        setNotice(
+          created.length === 2
+            ? "2 transactions added (income and expense)."
+            : "Transaction added.",
         );
-        setNotice("Transaction added.");
       }
       resetForm(activeProfile.currency);
       setShowForm(false);
@@ -455,8 +522,8 @@ export default function TransactionsPage() {
                     className="input"
                     type="text"
                     inputMode="decimal"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
+                    value={amountOf(amounts, type)}
+                    onChange={(e) => setAmounts(withAmount(amounts, type, e.target.value))}
                     aria-invalid={Boolean(fieldErrors.amount)}
                     aria-describedby={fieldErrors.amount ? "txn-amount-error" : "txn-amount-hint"}
                     placeholder="0.00"
@@ -576,12 +643,20 @@ export default function TransactionsPage() {
                     <p className="field-hint" id="txn-bucket-hint">
                       {buckets.length === 0
                         ? "This business has no buckets yet."
-                        : "Choosing a bucket uses that bucket's currency."}
+                        : "A bucket does not change this record's currency — the record currency must match the bucket's currency. To correct a record's currency, set its bucket to None, save the corrected currency, then reassign it."}
                     </p>
                   )}
                 </div>
               </div>
 
+              {!editingId && plannedEntryTypes(amounts).length > 0 && (
+                <p className="field-hint" role="status">
+                  This Save will create{" "}
+                  {plannedEntryTypes(amounts).length === 2
+                    ? "2 transactions: one Income and one Expense."
+                    : `1 transaction: ${plannedEntryTypes(amounts)[0] === "income" ? "Income" : "Expense"} only.`}
+                </p>
+              )}
               {formError && <p className="alert-error" role="alert">{formError}</p>}
               <div className="row-actions">
                 <button className="btn" type="submit" disabled={submitting}>
@@ -589,7 +664,9 @@ export default function TransactionsPage() {
                     ? "Saving…"
                     : editingId
                       ? "Save changes"
-                      : `Add ${TYPE_LABELS[type].toLowerCase()}`}
+                      : plannedEntryTypes(amounts).length === 2
+                        ? "Save 2 transactions"
+                        : `Add ${TYPE_LABELS[type].toLowerCase()}`}
                 </button>
                 <button
                   className="btn ghost"
