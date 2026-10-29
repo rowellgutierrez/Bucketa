@@ -14,5 +14,5 @@
     "useDefineForClassFields": true
   },
   "include": ["src", "vite.config.ts"],
-  "exclude": ["src/data/validation.test.ts"]
+  "exclude": ["src/data/validation.test.ts", "src/lib/scannerReview.test.ts", "src/lib/scannerApi.test.ts"]
 }

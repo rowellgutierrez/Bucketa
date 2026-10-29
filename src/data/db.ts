@@ -305,6 +305,231 @@ export function completeSale(sale: Sale): Promise<"completed" | "already-complet
   );
 }
 
+export type ScannerSaveOutcome = "saved" | "already-saved";
+
+function scannerTransactionFingerprint(record: Transaction): string {
+  return JSON.stringify({
+    id: record.id,
+    profileId: record.profileId,
+    bucketId: record.bucketId,
+    type: record.type,
+    amountMinor: record.amountMinor,
+    currency: record.currency,
+    date: record.date,
+    description: record.description,
+    category: record.category,
+    origin: record.origin,
+    relatedId: record.relatedId,
+  });
+}
+
+/**
+ * Saves one reviewed scanner batch atomically. Unlike repository create()
+ * calls in a loop, this uses ONE read-write IndexedDB transaction over
+ * profiles, buckets, and transactions. It revalidates profile and bucket
+ * ownership/currency from live database state, detects an already-saved
+ * or conflicting batch, and only then adds every transaction. Any failure
+ * aborts the transaction, so a scanner batch can never be partly saved.
+ *
+ * Resolves "already-saved" only when every planned deterministic record
+ * already exists with identical financial content. A subset, or the same
+ * ID with different content, is a conflict and saves nothing.
+ */
+export function saveScannerTransactions(args: {
+  profileId: string;
+  bucketId: string | null;
+  expectedCurrency: string;
+  transactions: Transaction[];
+}): Promise<ScannerSaveOutcome> {
+  const { profileId, bucketId, expectedCurrency, transactions } = args;
+  if (transactions.length === 0) {
+    return Promise.reject(new BucketaDataError("There are no scanner entries to save."));
+  }
+  const relatedId = transactions[0].relatedId;
+  if (!relatedId?.startsWith("scanner-batch:")) {
+    return Promise.reject(new BucketaDataError("Scanner batch information is missing."));
+  }
+  const seenIds = new Set<string>();
+  try {
+    for (const transaction of transactions) {
+      validateTransaction(transaction);
+      if (transaction.profileId !== profileId) {
+        throw new BucketaDataError("A scanner entry belongs to a different profile.");
+      }
+      if (transaction.bucketId !== bucketId) {
+        throw new BucketaDataError("A scanner entry has a different bucket from the reviewed batch.");
+      }
+      if (transaction.currency !== expectedCurrency) {
+        throw new BucketaDataError("A scanner entry has a different currency from the reviewed batch.");
+      }
+      if (transaction.origin !== "scanner-confirmed") {
+        throw new BucketaDataError("A scanner entry has the wrong origin.");
+      }
+      if (transaction.relatedId !== relatedId) {
+        throw new BucketaDataError("Scanner entries do not belong to the same batch.");
+      }
+      if (!transaction.id.startsWith("scanner:")) {
+        throw new BucketaDataError("A scanner entry has an invalid identifier.");
+      }
+      if (seenIds.has(transaction.id)) {
+        throw new BucketaDataError("Scanner entries contain a duplicate identifier.");
+      }
+      seenIds.add(transaction.id);
+      if (transaction.type !== "income" && transaction.type !== "expense") {
+        throw new BucketaDataError("Scanner entries can only be saved as income or expenses.");
+      }
+    }
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  return openDb().then(
+    (db) =>
+      new Promise<ScannerSaveOutcome>((resolve, reject) => {
+        const transaction = db.transaction(
+          ["profiles", "buckets", "transactions"],
+          "readwrite",
+        );
+        const profilesStore = transaction.objectStore("profiles");
+        const bucketsStore = transaction.objectStore("buckets");
+        const transactionsStore = transaction.objectStore("transactions");
+        let settled = false;
+        let outcome: ScannerSaveOutcome = "saved";
+        let profile: Profile | undefined;
+        let bucket: Bucket | undefined;
+        let existingTransactions: Transaction[] = [];
+        let pendingReads = bucketId ? 3 : 2;
+
+        const fail = (message: string) => {
+          if (settled) return;
+          settled = true;
+          try {
+            transaction.abort();
+          } catch {
+            // The reject below still reports the failed save.
+          }
+          reject(new BucketaDataError(message));
+        };
+
+        transaction.oncomplete = () => {
+          if (settled) return;
+          settled = true;
+          resolve(outcome);
+        };
+        transaction.onerror = () => {
+          if (settled) return;
+          settled = true;
+          reject(new BucketaDataError("Scanner entries could not be saved. Nothing was saved."));
+        };
+        transaction.onabort = () => {
+          if (settled) return;
+          settled = true;
+          reject(new BucketaDataError("Scanner save was cancelled. Nothing was saved."));
+        };
+
+        const finishReads = () => {
+          if (settled || pendingReads !== 0) return;
+          if (!profile) {
+            fail("The selected profile no longer exists. Nothing was saved.");
+            return;
+          }
+          if (bucketId) {
+            if (!bucket) {
+              fail("The selected bucket no longer exists. Nothing was saved.");
+              return;
+            }
+            if (bucket.profileId !== profileId) {
+              fail("The selected bucket does not belong to this profile. Nothing was saved.");
+              return;
+            }
+            if (bucket.currency !== expectedCurrency) {
+              fail("The selected bucket uses a different currency. Nothing was saved.");
+              return;
+            }
+          }
+
+          const existingById = new Map(
+            existingTransactions.map((record) => [record.id, record]),
+          );
+          const batchRecords = existingTransactions.filter(
+            (record) => record.relatedId === relatedId,
+          );
+          const plannedExisting = transactions.filter((record) =>
+            existingById.has(record.id),
+          );
+
+          if (plannedExisting.length === transactions.length) {
+            const identical = transactions.every((planned) => {
+              const existing = existingById.get(planned.id);
+              return (
+                existing &&
+                scannerTransactionFingerprint(existing) ===
+                  scannerTransactionFingerprint(planned)
+              );
+            });
+            if (!identical) {
+              fail(
+                "This scanner batch was already recorded with different details. Nothing was saved again.",
+              );
+              return;
+            }
+            outcome = "already-saved";
+            return;
+          }
+          if (plannedExisting.length > 0 || batchRecords.length > 0) {
+            fail(
+              "Part of this scanner batch was already recorded with different details. Nothing was saved again.",
+            );
+            return;
+          }
+
+          try {
+            for (const record of transactions) validateTransaction(record);
+          } catch {
+            fail("A scanner entry is invalid. Nothing was saved.");
+            return;
+          }
+          for (const record of transactions) {
+            const addRequest = transactionsStore.add(record);
+            addRequest.onerror = () =>
+              fail("Scanner entries could not be saved. Nothing was saved.");
+          }
+        };
+
+        const readDone = () => {
+          pendingReads -= 1;
+          finishReads();
+        };
+
+        const profileRequest = profilesStore.get(profileId);
+        profileRequest.onsuccess = () => {
+          profile = profileRequest.result as Profile | undefined;
+          readDone();
+        };
+        profileRequest.onerror = () => fail("Could not verify the selected profile.");
+
+        if (bucketId) {
+          const bucketRequest = bucketsStore.get(bucketId);
+          bucketRequest.onsuccess = () => {
+            bucket = bucketRequest.result as Bucket | undefined;
+            readDone();
+          };
+          bucketRequest.onerror = () => fail("Could not verify the selected bucket.");
+        }
+
+        const existingRequest = transactionsStore
+          .index("profileId")
+          .getAll(profileId);
+        existingRequest.onsuccess = () => {
+          existingTransactions = existingRequest.result as Transaction[];
+          readDone();
+        };
+        existingRequest.onerror = () =>
+          fail("Could not check for an existing scanner batch.");
+      }),
+  );
+}
+
 export const profilesRepo = createRepository<Profile>("profiles", validateProfile, { byProfile: false });
 export const bucketsRepo = createRepository<Bucket>("buckets", validateBucket);
 export const transactionsRepo = createRepository<Transaction>("transactions", validateTransaction);

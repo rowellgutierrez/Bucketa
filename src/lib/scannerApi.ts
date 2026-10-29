@@ -2,9 +2,10 @@
  * Typed client for the Bucketa scanner backend.
  *
  * The browser only ever talks to the same-origin `/api` routes (proxied
- * to the local Node server in development). Meta API keys and live-test
- * tokens stay server-side: this client never sends them and has no
- * access to them.
+ * to the local Node server in development). The Meta API key stays
+ * server-side only. A live-test token is never hard-coded, persisted, or
+ * logged here; it is only forwarded when a caller supplies one at runtime
+ * for an explicitly requested live extraction.
  */
 
 export interface ScannerHealth {
@@ -28,6 +29,25 @@ export interface ExtractRequest {
   mediaType: string;
   expectedCurrency: string;
   recordType: ScannerRecordType;
+}
+
+export type ScannerExtractionMode = "mock" | "live";
+
+export interface ScannerExtractionOptions {
+  mode?: ScannerExtractionMode;
+  /**
+   * Runtime-supplied local live-test token. This must never be hard-coded,
+   * persisted, or logged by callers; it is forwarded only for one live call.
+   */
+  liveTestToken?: string;
+}
+
+/** Live UI is available only in Vite development with a gated backend. */
+export function isLiveScannerAvailable(
+  isDevelopment: boolean,
+  health: ScannerHealth | null,
+): boolean {
+  return isDevelopment && health?.liveMeta === "enabled-gated";
 }
 
 export interface ExtractedEntry {
@@ -287,18 +307,40 @@ export async function prepareScannerImage(file: File): Promise<PreparedScannerIm
 }
 
 /**
- * Request extraction for one image. Mock mode is explicit: the browser
- * never asks for, or authorizes, a live Meta request.
+ * Request extraction for one image. Mock mode is the default for every
+ * existing caller. Live mode is sent only when explicitly requested, and a
+ * live request without a runtime-supplied non-empty token fails before any
+ * network call rather than silently falling back to mock.
  */
 export async function requestExtraction(
   request: ExtractRequest,
+  options: ScannerExtractionOptions = {},
 ): Promise<ExtractResponse> {
+  const mode = options.mode ?? "mock";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (mode === "live") {
+    const liveTestToken = options.liveTestToken;
+    if (!liveTestToken || liveTestToken.trim().length === 0) {
+      throw new ScannerApiError(
+        "live_token_required",
+        "Enter the live test token provided by the local server operator before requesting a live scan.",
+      );
+    }
+    headers["x-bucketa-live-test"] = liveTestToken;
+  } else if (mode !== "mock") {
+    throw new ScannerApiError(
+      "invalid_request",
+      "Choose mock or live extraction before scanning.",
+    );
+  }
   const { payload } = await requestJson(
     "/api/extract",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...request, mode: "mock" }),
+      headers,
+      body: JSON.stringify({ ...request, mode }),
     },
     35_000,
   );
