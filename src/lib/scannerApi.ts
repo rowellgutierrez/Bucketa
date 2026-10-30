@@ -55,6 +55,11 @@ export interface ExtractedEntry {
   type: "income" | "expense" | null;
   amountText: string | null;
   amountMinor: number | null;
+  quantityText: string | null;
+  unitPriceText: string | null;
+  unitPriceMinor: number | null;
+  expectedAmountMinor: number | null;
+  arithmeticMismatch: boolean;
   currency: string;
   currencyDetected: string | null;
   currencyConflict: boolean;
@@ -78,6 +83,13 @@ export interface ExtractResponse {
   mode: "mock" | "live";
   recordType: ScannerRecordType;
   currency: string;
+  /**
+   * Written document-level grand total, transcribed separately from the
+   * entries. Optional for compatibility with older/mock responses that
+   * do not provide one; null means no readable total was reported.
+   */
+  documentTotalText?: string | null;
+  documentTotalMinor?: number | null;
   entries: ExtractedEntry[];
   totals: ExtractionTotals;
   needsReviewCount: number;

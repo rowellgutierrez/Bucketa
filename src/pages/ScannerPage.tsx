@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import { bucketsRepo, profilesRepo, saveScannerTransactions } from "../data/db";
 import type { Bucket, Profile } from "../data/types";
 import { formatMoney } from "../lib/currency";
@@ -15,14 +15,24 @@ import {
   type ScannerRecordType,
 } from "../lib/scannerApi";
 import {
+  applyScannerCalendarSelection,
+  applyScannerDateEdit,
   applyScannerDraftEdit,
   buildScannerDrafts,
   buildScannerTransactions,
   createScannerBatchId,
+  formatScannerDateForDisplay,
+  formatScannerDateInput,
+  mapScannerDateInputSelection,
   requiresExplicitConfirmation,
+  resolveScannerDateEdit,
+  scannerDraftDateGroups,
   scannerDraftTotals,
+  scannerGrandTotalAcknowledgmentSatisfied,
+  scannerGrandTotalReconciliation,
   scannerReviewWarnings,
   validateScannerDrafts,
+  type ScannerDateFormat,
   type ScannerDraft,
   type ScannerEntryType,
   type ScannerReviewContext,
@@ -104,6 +114,283 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+const SCANNER_MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** "2026-10-30" -> "October 30, 2026", using a fixed month table (no locale parsing). */
+function formatScannerDateGroupLabel(isoDate: string): string {
+  const [yearText, monthText, dayText] = isoDate.split("-");
+  const monthName = SCANNER_MONTH_NAMES[Number(monthText) - 1] ?? "";
+  // Keep the year exactly as stored so four-digit years are never truncated.
+  return `${monthName} ${Number(dayText)}, ${yearText}`;
+}
+
+const SCANNER_DATE_FORMAT_STORAGE_KEY = "bucketa.scannerDateFormat";
+const SCANNER_DATE_FORMAT_OPTIONS: readonly ScannerDateFormat[] = [
+  "DD/MM/YYYY",
+  "MM/DD/YYYY",
+  "YYYY-MM-DD",
+];
+
+/** Scanner-local display preference only; no financial data is stored. */
+function loadScannerDateFormat(): ScannerDateFormat {
+  try {
+    const stored = window.localStorage.getItem(SCANNER_DATE_FORMAT_STORAGE_KEY);
+    return SCANNER_DATE_FORMAT_OPTIONS.includes(stored as ScannerDateFormat)
+      ? (stored as ScannerDateFormat)
+      : "DD/MM/YYYY";
+  } catch {
+    return "DD/MM/YYYY";
+  }
+}
+
+function storeScannerDateFormat(format: ScannerDateFormat) {
+  try {
+    window.localStorage.setItem(SCANNER_DATE_FORMAT_STORAGE_KEY, format);
+  } catch {
+    // Storage may be unavailable (private mode, quotas); the in-memory
+    // preference still applies for this session.
+  }
+}
+
+interface ScannerDateEditorProps {
+  draft: ScannerDraft;
+  dateFormat: ScannerDateFormat;
+  disabled: boolean;
+  onCommit: (transactionId: string, enteredText: string) => void;
+  onCalendarSelection: (transactionId: string, pickerValue: string) => void;
+  onEditingChange: (transactionId: string, dirty: boolean) => void;
+}
+
+/**
+ * Buffered scanner date editor with an optional native calendar picker.
+ * Keystrokes stay local so the entry never regroups mid-edit; a finished
+ * manual edit commits once on Enter or blur under the selected display
+ * format (committed dates are always internal ISO YYYY-MM-DD). The
+ * calendar button opens a separate selection-only native date input via
+ * showPicker() where available: opening or cancelling it changes
+ * nothing, and only a complete picker selection (or explicit clear)
+ * commits, exactly once. Invalid or incomplete text is preserved
+ * verbatim with an inline error, Escape restores the last committed
+ * date, and clearing the field returns the entry to Needs Date Review.
+ */
+function ScannerDateEditor({
+  draft,
+  dateFormat,
+  disabled,
+  onCommit,
+  onCalendarSelection,
+  onEditingChange,
+}: ScannerDateEditorProps) {
+  const committedText = formatScannerDateForDisplay(draft.date, dateFormat);
+  const [text, setText] = useState(committedText);
+  const [editing, setEditing] = useState(false);
+  const [showError, setShowError] = useState(
+    () => resolveScannerDateEdit(committedText, dateFormat).status === "invalid",
+  );
+  const [pickerUnavailable, setPickerUnavailable] = useState(false);
+  const cancelNextCommitRef = useRef(false);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingSelectionRef = useRef<{ text: string; start: number; end: number } | null>(null);
+  const pickerRef = useRef<HTMLInputElement | null>(null);
+  const calendarButtonRef = useRef<HTMLButtonElement | null>(null);
+  const errorId = `scanner-date-error-${draft.transactionId}`;
+  const hintId = `scanner-date-hint-${draft.transactionId}`;
+
+  // Follow external changes (rescan, regroup, format switch) only while
+  // the user is not actively editing this field.
+  useEffect(() => {
+    if (!editing) {
+      pendingSelectionRef.current = null;
+      setText(committedText);
+      setShowError(resolveScannerDateEdit(committedText, dateFormat).status === "invalid");
+    }
+  }, [committedText, dateFormat, editing]);
+
+  // Restore the caret mapped through smart formatting before paint, so a
+  // reformatted value does not leave the cursor at the end of the input.
+  useLayoutEffect(() => {
+    const pending = pendingSelectionRef.current;
+    if (!pending) return;
+    pendingSelectionRef.current = null;
+    const input = textInputRef.current;
+    if (!input || document.activeElement !== input || input.value !== pending.text || text !== pending.text) {
+      return;
+    }
+    try {
+      input.setSelectionRange(pending.start, pending.end);
+    } catch {
+      // Some mobile browsers restrict selection APIs; leave their caret as-is.
+    }
+  }, [text]);
+
+  const finishEditing = () => {
+    pendingSelectionRef.current = null;
+    if (cancelNextCommitRef.current) {
+      cancelNextCommitRef.current = false;
+      return;
+    }
+    setEditing(false);
+    setShowError(resolveScannerDateEdit(text, dateFormat).status === "invalid");
+    onEditingChange(draft.transactionId, false);
+    if (text !== committedText) onCommit(draft.transactionId, text);
+  };
+
+  const openCalendar = () => {
+    const picker = pickerRef.current;
+    if (!picker || disabled) return;
+    // Seed from the committed ISO date only; never reinterpret typed text.
+    picker.value =
+      resolveScannerDateEdit(draft.date, "YYYY-MM-DD").status === "valid" ? draft.date : "";
+    try {
+      if (typeof picker.showPicker === "function") {
+        picker.showPicker();
+      } else {
+        setPickerUnavailable(true);
+      }
+    } catch {
+      setPickerUnavailable(true);
+    }
+  };
+
+  const handlePickerChange = (value: string) => {
+    pendingSelectionRef.current = null;
+    if (value && resolveScannerDateEdit(value, "YYYY-MM-DD").status !== "valid") {
+      // A native picker should never report this; preserve manual text.
+      return;
+    }
+    setText(value ? formatScannerDateForDisplay(value, dateFormat) : "");
+    setShowError(false);
+    setPickerUnavailable(false);
+    setEditing(false);
+    onEditingChange(draft.transactionId, false);
+    onCalendarSelection(draft.transactionId, value);
+  };
+
+  return (
+    <>
+      <div className="scanner-date-editor">
+        <input
+          ref={textInputRef}
+          className="input scanner-edit-input"
+          type="text"
+          value={text}
+          disabled={disabled}
+          inputMode="numeric"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={dateFormat}
+          aria-label="Date"
+          aria-invalid={showError}
+          aria-describedby={showError ? `${hintId} ${errorId}` : hintId}
+          onFocus={() => {
+            cancelNextCommitRef.current = false;
+            setEditing(true);
+            setShowError(false);
+          }}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            const enteredText = input.value;
+            const nextText = formatScannerDateInput(enteredText, dateFormat, text);
+            pendingSelectionRef.current =
+              nextText !== enteredText &&
+              input.selectionStart !== null &&
+              input.selectionEnd !== null
+                ? {
+                    text: nextText,
+                    ...mapScannerDateInputSelection(
+                      enteredText,
+                      nextText,
+                      input.selectionStart,
+                      input.selectionEnd,
+                    ),
+                  }
+                : null;
+            setText(nextText);
+            setShowError(false);
+            setPickerUnavailable(false);
+            onEditingChange(draft.transactionId, nextText !== committedText);
+          }}
+          onBlur={(event) => {
+            pendingSelectionRef.current = null;
+            // Moving focus to this editor's own calendar button is not a
+            // finished edit; the manual text must survive picker use.
+            if (
+              event.relatedTarget === calendarButtonRef.current ||
+              event.relatedTarget === pickerRef.current
+            ) {
+              return;
+            }
+            finishEditing();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              finishEditing();
+              event.currentTarget.blur();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              pendingSelectionRef.current = null;
+              cancelNextCommitRef.current = true;
+              setText(committedText);
+              setShowError(false);
+              setEditing(false);
+              onEditingChange(draft.transactionId, false);
+              event.currentTarget.blur();
+            }
+          }}
+        />
+        <button
+          ref={calendarButtonRef}
+          className="scanner-date-picker-btn"
+          type="button"
+          disabled={disabled}
+          aria-label="Choose date from calendar"
+          title="Choose date from calendar"
+          onClick={openCalendar}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <rect x="3.5" y="5" width="17" height="16" rx="2" />
+            <path d="M3.5 9.5h17M8 3v4M16 3v4" />
+          </svg>
+        </button>
+        <input
+          ref={pickerRef}
+          className="scanner-date-picker-proxy"
+          type="date"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(event) => handlePickerChange(event.target.value)}
+        />
+      </div>
+      <span className="field-hint" id={hintId}>Format: {dateFormat}</span>
+      {pickerUnavailable && (
+        <span className="field-hint">
+          Calendar is not available in this browser. Type the date as {dateFormat}.
+        </span>
+      )}
+      {showError && (
+        <span className="scanner-date-error" id={errorId}>
+          Enter a real date as {dateFormat}, or clear the field.
+        </span>
+      )}
+    </>
+  );
+}
+
 export default function ScannerPage() {
   const [healthStatus, setHealthStatus] = useState<HealthStatus>("checking");
   const [health, setHealth] = useState<ScannerHealth | null>(null);
@@ -134,6 +421,8 @@ export default function ScannerPage() {
   const [liveQuotaStale, setLiveQuotaStale] = useState(false);
   const [result, setResult] = useState<ExtractResponse | null>(null);
   const [drafts, setDrafts] = useState<ScannerDraft[]>([]);
+  const [dirtyDateEditIds, setDirtyDateEditIds] = useState<ReadonlySet<string>>(new Set());
+  const [dateFormat, setDateFormat] = useState<ScannerDateFormat>(loadScannerDateFormat);
   const [batchId, setBatchId] = useState("");
   const [reviewRecordType, setReviewRecordType] = useState<ScannerRecordType>("expenses");
   const [saveAttempted, setSaveAttempted] = useState(false);
@@ -141,6 +430,10 @@ export default function ScannerPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveOutcome, setSaveOutcome] = useState<"saved" | "already-saved" | null>(null);
+  // Comparison key the reviewer acknowledged a written-total difference
+  // for. Keyed to the exact figures compared, so any relevant edit,
+  // direction change, or removal automatically invalidates it.
+  const [acknowledgedGrandTotalKey, setAcknowledgedGrandTotalKey] = useState<string | null>(null);
 
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -170,6 +463,11 @@ export default function ScannerPage() {
   const pendingRemovalDraft = pendingRemovalId
     ? drafts.find((draft) => draft.transactionId === pendingRemovalId) ?? null
     : null;
+
+  // Persist only the scanner date-format preference (no financial data).
+  useEffect(() => {
+    storeScannerDateFormat(dateFormat);
+  }, [dateFormat]);
 
   // Warn on browser refresh / tab close only while a review is unsaved.
   useEffect(() => {
@@ -330,6 +628,7 @@ export default function ScannerPage() {
     setConfirmingSave(false);
     setSaveError("");
     setSaveOutcome(null);
+    setAcknowledgedGrandTotalKey(null);
   }
 
   function clearImage() {
@@ -507,6 +806,24 @@ export default function ScannerPage() {
     () => scannerDraftTotals(drafts, expectedCurrency),
     [drafts, expectedCurrency],
   );
+  const draftGroups = useMemo(
+    () => scannerDraftDateGroups(drafts, reviewRecordType, expectedCurrency),
+    [drafts, reviewRecordType, expectedCurrency],
+  );
+  const grandTotalReconciliation = useMemo(
+    () =>
+      scannerGrandTotalReconciliation(
+        drafts,
+        result?.documentTotalText,
+        result?.documentTotalMinor,
+        expectedCurrency,
+      ),
+    [drafts, result, expectedCurrency],
+  );
+  const grandTotalAcknowledged = scannerGrandTotalAcknowledgmentSatisfied(
+    grandTotalReconciliation,
+    acknowledgedGrandTotalKey,
+  );
   const saveLocked = saving || saveOutcome !== null;
 
   function updateDraft(transactionId: string, patch: Partial<ScannerDraft>) {
@@ -516,6 +833,53 @@ export default function ScannerPage() {
     setDrafts((current) =>
       current.map((draft) =>
         draft.transactionId === transactionId ? applyScannerDraftEdit(draft, patch) : draft,
+      ),
+    );
+  }
+
+  const handleDateEditingChange = useCallback((transactionId: string, dirty: boolean) => {
+    setDirtyDateEditIds((current) => {
+      if (dirty === current.has(transactionId)) return current;
+      const next = new Set(current);
+      if (dirty) next.add(transactionId);
+      else next.delete(transactionId);
+      return next;
+    });
+  }, []);
+
+  // Drop edit locks for entries that no longer exist.
+  useEffect(() => {
+    setDirtyDateEditIds((current) => {
+      if (current.size === 0) return current;
+      const ids = new Set(drafts.map((draft) => draft.transactionId));
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [drafts]);
+
+  function commitDraftDate(transactionId: string, enteredText: string) {
+    if (saveLocked) return;
+    setConfirmingSave(false);
+    setSaveError("");
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.transactionId === transactionId
+          ? applyScannerDateEdit(draft, enteredText, dateFormat)
+          : draft,
+      ),
+    );
+  }
+
+  function commitCalendarDate(transactionId: string, pickerValue: string) {
+    if (saveLocked) return;
+    setConfirmingSave(false);
+    setSaveError("");
+    handleDateEditingChange(transactionId, false);
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.transactionId === transactionId
+          ? applyScannerCalendarSelection(draft, pickerValue)
+          : draft,
       ),
     );
   }
@@ -591,6 +955,10 @@ export default function ScannerPage() {
   function requestSaveConfirmation() {
     setSaveAttempted(true);
     setSaveError("");
+    if (dirtyDateEditIds.size > 0) {
+      setSaveError("Finish editing the date first: press Enter or move to another field so the date can be checked.");
+      return;
+    }
     if (drafts.length === 0) {
       setSaveError("Remove or restore at least one entry before saving. Scan the image again to restore removed entries.");
       return;
@@ -601,11 +969,31 @@ export default function ScannerPage() {
       );
       return;
     }
+    if (!grandTotalAcknowledged) {
+      setSaveError(
+        "The written grand total does not match the reviewed entries. Tick “I checked the written-total difference” before saving.",
+      );
+      return;
+    }
     setConfirmingSave(true);
   }
 
   async function confirmSave() {
     if (!activeProfile || saving || saveOutcome) return;
+    if (dirtyDateEditIds.size > 0) {
+      setConfirmingSave(false);
+      setSaveError("Finish editing the date first: press Enter or move to another field so the date can be checked.");
+      return;
+    }
+    // Re-checked at save time so a stale confirmation panel can never
+    // bypass a written-total mismatch acknowledgment.
+    if (!grandTotalAcknowledged) {
+      setConfirmingSave(false);
+      setSaveError(
+        "The written grand total does not match the reviewed entries. Tick “I checked the written-total difference” before saving.",
+      );
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -991,6 +1379,25 @@ export default function ScannerPage() {
             </div>
           ) : (
             <>
+              <div className="scanner-date-format-control">
+                <label htmlFor="scanner-date-format">Date format</label>
+                <select
+                  id="scanner-date-format"
+                  className="input"
+                  value={dateFormat}
+                  disabled={saveLocked || dirtyDateEditIds.size > 0}
+                  onChange={(event) => setDateFormat(event.target.value as ScannerDateFormat)}
+                >
+                  {SCANNER_DATE_FORMAT_OPTIONS.map((format) => (
+                    <option key={format} value={format}>{format}</option>
+                  ))}
+                </select>
+                <span className="field-hint">
+                  {dirtyDateEditIds.size > 0
+                    ? "Finish the current date edit before changing the format."
+                    : `Dates are entered and shown as ${dateFormat}; saved dates do not change.`}
+                </span>
+              </div>
               <div className="scanner-table-wrap">
                 <table className="scanner-table scanner-edit-table">
                   <thead>
@@ -1005,12 +1412,52 @@ export default function ScannerPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {drafts.map((draft, index) => {
-                      const errors = draftErrors.get(draft.transactionId) ?? [];
-                      const warnings = scannerReviewWarnings(draft);
-                      const showErrors = saveAttempted && errors.length > 0;
+                    {draftGroups.map((group) => {
+                      const summaryParts: string[] = [];
+                      if (group.summary.salesMinor !== 0) {
+                        summaryParts.push(`Sales ${formatMoney(group.summary.salesMinor, expectedCurrency)}`);
+                      }
+                      if (group.summary.otherIncomeMinor !== 0) {
+                        summaryParts.push(`Other income ${formatMoney(group.summary.otherIncomeMinor, expectedCurrency)}`);
+                      }
+                      if (group.summary.expensesMinor !== 0) {
+                        summaryParts.push(`Expenses ${formatMoney(group.summary.expensesMinor, expectedCurrency)}`);
+                      }
+                      if (group.summary.salaryPaymentsMinor !== 0) {
+                        summaryParts.push(`Salary payments ${formatMoney(group.summary.salaryPaymentsMinor, expectedCurrency)}`);
+                      }
+                      summaryParts.push(`Net ${formatMoney(group.summary.netMinor, expectedCurrency)}`);
                       return (
-                        <tr key={draft.transactionId}>
+                        <Fragment key={group.key}>
+                          <tr className="scanner-date-group-row">
+                            <td colSpan={7}>
+                              <span className="scanner-date-group-title">
+                                {group.needsDateReview
+                                  ? "Needs Date Review"
+                                  : formatScannerDateGroupLabel(group.date ?? group.key)}
+                              </span>
+                              <span className="scanner-date-group-preview">
+                                {group.needsDateReview
+                                  ? "Provisional · Review Preview — Not Saved"
+                                  : "Review Preview — Not Saved"}
+                              </span>
+                              <span className="scanner-date-group-summary">
+                                {group.summary.entryCount}{" "}
+                                {group.summary.entryCount === 1 ? "entry" : "entries"} ·{" "}
+                                {summaryParts.join(" · ")}
+                                {group.summary.incompleteEntries > 0
+                                  ? ` · ${group.summary.incompleteEntries} incomplete — not included in totals`
+                                  : ""}
+                              </span>
+                            </td>
+                          </tr>
+                          {group.drafts.map((draft) => {
+                            const index = drafts.indexOf(draft);
+                            const errors = draftErrors.get(draft.transactionId) ?? [];
+                            const warnings = scannerReviewWarnings(draft);
+                            const showErrors = saveAttempted && errors.length > 0;
+                            return (
+                              <tr key={draft.transactionId}>
                           <td data-label="Description">
                             <input
                               className="input scanner-edit-input"
@@ -1029,7 +1476,7 @@ export default function ScannerPage() {
                               onChange={(event) => updateDraft(draft.transactionId, { type: event.target.value as ScannerEntryType })}
                             >
                               <option value="">Choose…</option>
-                              <option value="income">Income</option>
+                              <option value="income">{reviewRecordType === "sales" ? "Sales (Income)" : "Income"}</option>
                               <option value="expense">Expense</option>
                             </select>
                           </td>
@@ -1042,18 +1489,26 @@ export default function ScannerPage() {
                               aria-label={`Amount in ${expectedCurrency}`}
                               onChange={(event) => updateDraft(draft.transactionId, { amountText: event.target.value })}
                             />
+                            {draft.quantityText && draft.unitPriceMinor !== null && (
+                              <span className="field-hint">
+                                Scan read: {draft.quantityText} × {formatMoney(draft.unitPriceMinor, expectedCurrency)}
+                                {draft.expectedAmountMinor !== null
+                                  ? ` = ${formatMoney(draft.expectedAmountMinor, expectedCurrency)}`
+                                  : ""}
+                              </span>
+                            )}
                             {draft.currencyConflict && draft.currencyDetected && (
                               <span className="field-hint">Image shows {draft.currencyDetected}; saving currency stays {expectedCurrency}.</span>
                             )}
                           </td>
                           <td data-label="Date">
-                            <input
-                              className="input scanner-edit-input"
-                              type="date"
-                              value={draft.date}
+                            <ScannerDateEditor
+                              draft={draft}
+                              dateFormat={dateFormat}
                               disabled={saveLocked}
-                              aria-label="Date"
-                              onChange={(event) => updateDraft(draft.transactionId, { date: event.target.value })}
+                              onCommit={commitDraftDate}
+                              onCalendarSelection={commitCalendarDate}
+                              onEditingChange={handleDateEditingChange}
                             />
                             {draft.dateHint && <span className="field-hint">Scan read: {draft.dateHint}</span>}
                           </td>
@@ -1080,9 +1535,9 @@ export default function ScannerPage() {
                             ) : (
                               <span className="scanner-ready">Ready</span>
                             )}
-                            {warnings.length > 0 && (
-                              <span className="scanner-review-warnings">{warnings.join(" · ")}</span>
-                            )}
+                            {warnings.map((warning) => (
+                              <span key={warning} className="scanner-review-warnings">{warning}</span>
+                            ))}
                             {showErrors && (
                               <ul className="scanner-entry-errors">
                                 {errors.map((message) => <li key={message}>{message}</li>)}
@@ -1118,7 +1573,10 @@ export default function ScannerPage() {
                               </svg>
                             </button>
                           </td>
-                        </tr>
+                              </tr>
+                            );
+                          })}
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -1130,6 +1588,61 @@ export default function ScannerPage() {
                 <div><dt>Net</dt><dd>{formatMoney(draftTotals.netMinor, expectedCurrency)}</dd></div>
                 <div><dt>Counted</dt><dd>{draftTotals.countedEntries} of {drafts.length}</dd></div>
               </dl>
+              {grandTotalReconciliation.status === "unreadable" ? (
+                <p className="field-hint">
+                  A written grand total was reported but could not be read clearly enough to compare with the reviewed entries.
+                </p>
+              ) : grandTotalReconciliation.documentTotalMinor !== null ? (
+                <div className="scanner-reconciliation">
+                  <h3>Written total check</h3>
+                  {grandTotalReconciliation.reviewedEntryTotalMinor !== null && grandTotalReconciliation.differenceMinor !== null ? (
+                    <>
+                      <dl className="scanner-totals">
+                        <div><dt>Written grand total</dt><dd>{formatMoney(grandTotalReconciliation.documentTotalMinor, expectedCurrency)}</dd></div>
+                        <div><dt>Reviewed entry total</dt><dd>{formatMoney(grandTotalReconciliation.reviewedEntryTotalMinor, expectedCurrency)}</dd></div>
+                        <div><dt>Difference</dt><dd>{formatMoney(Math.abs(grandTotalReconciliation.differenceMinor), expectedCurrency)}</dd></div>
+                        {grandTotalReconciliation.quantityComparisonAvailable && grandTotalReconciliation.quantityTotalMinor !== null && grandTotalReconciliation.quantityDifferenceMinor !== null ? (
+                          <>
+                            <div><dt>Quantity × price total</dt><dd>{formatMoney(grandTotalReconciliation.quantityTotalMinor, expectedCurrency)}</dd></div>
+                            <div><dt>Difference</dt><dd>{formatMoney(Math.abs(grandTotalReconciliation.quantityDifferenceMinor), expectedCurrency)}</dd></div>
+                          </>
+                        ) : null}
+                      </dl>
+                      {grandTotalReconciliation.quantityComparisonAvailable ? null : (
+                        <p className="field-hint">Quantity × price comparison is unavailable because not every entry has a readable quantity and unit price.</p>
+                      )}
+                      {grandTotalReconciliation.mismatch ? (
+                        <>
+                          <p className="scanner-warning" role="alert">
+                            The written total does not match the reviewed entries. Check for missing items, incorrect amounts, discounts, fees, taxes, or writing errors.
+                          </p>
+                          <label className="scanner-confirm-check">
+                            <input
+                              type="checkbox"
+                              checked={grandTotalAcknowledged}
+                              disabled={saveLocked}
+                              onChange={(event) =>
+                                setAcknowledgedGrandTotalKey(
+                                  event.target.checked
+                                    ? grandTotalReconciliation.comparisonKey
+                                    : null,
+                                )
+                              }
+                            />
+                            I checked the written-total difference.
+                          </label>
+                        </>
+                      ) : (
+                        <p className="field-hint">The written grand total matches the reviewed entries.</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="field-hint">
+                      The written grand total cannot be compared yet because the reviewed entries do not share one income or expense direction, or an amount still needs attention.
+                    </p>
+                  )}
+                </div>
+              ) : null}
               <p className="field-hint">
                 Totals are recalculated by Bucketa from your edited amounts.
                 Scanned sales save as income or expense transactions — never as
@@ -1215,6 +1728,9 @@ export default function ScannerPage() {
                   </button>
                   {saveAttempted && invalidDraftCount > 0 && (
                     <span className="field-hint">Fix {invalidDraftCount} entries or remove them to continue.</span>
+                  )}
+                  {grandTotalReconciliation.mismatch && !grandTotalAcknowledged && (
+                    <span className="field-hint">Check the written-total difference above to continue.</span>
                   )}
                 </div>
               )}

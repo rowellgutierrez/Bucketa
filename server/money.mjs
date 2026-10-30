@@ -47,6 +47,39 @@ export function parseAmountToMinor(amountText, currency) {
 }
 
 /**
+ * Parse a quantity written as a plain decimal string (examples: "2",
+ * "1.5") into integer thousandths (milli-units), so line totals can be
+ * computed without floating point. Returns a BigInt, or null when the
+ * text is not a clean positive quantity with at most 3 decimal places.
+ */
+export function parseQuantityMilli(quantityText) {
+  if (typeof quantityText !== "string") return null;
+  const text = quantityText.trim();
+  if (!/^\d{1,9}(\.\d{1,3})?$/.test(text)) return null;
+  const [whole, fraction = ""] = text.split(".");
+  const milli =
+    BigInt(whole) * 1000n + BigInt((fraction + "000").slice(0, 3) || "0");
+  return milli > 0n ? milli : null;
+}
+
+/**
+ * Expected line total in minor units: quantity x unit price, in exact
+ * integer arithmetic. Returns null when the quantity or unit price is
+ * missing/unreadable, or when the product is not exactly representable
+ * in minor units (never rounded to force a match).
+ */
+export function computeExpectedLineMinor(quantityText, unitPriceMinor) {
+  if (!Number.isSafeInteger(unitPriceMinor) || unitPriceMinor < 0) return null;
+  const milli = parseQuantityMilli(quantityText);
+  if (milli === null) return null;
+  const product = milli * BigInt(unitPriceMinor);
+  if (product % 1000n !== 0n) return null;
+  const expected = product / 1000n;
+  if (expected > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(expected);
+}
+
+/**
  * Sum validated entries in integer minor units. Entries without a
  * parsed amount are skipped and counted, never guessed.
  */
