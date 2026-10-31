@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "server": "node server/server.mjs",
     "test:server": "node --test \"server/tests/*.test.mjs\"",
-    "test:data": "node --test src/data/validation.test.ts"
+    "test:data": "node --test src/data/validation.test.ts",
+    "test:lib": "node --test src/lib/scannerReview.test.ts src/lib/scannerApi.test.ts src/lib/buckyAgent.test.ts src/lib/buckyApi.test.ts src/lib/transactionCorrection.test.ts",
+    "test": "npm run test:server && npm run test:data && npm run test:lib && npm run typecheck"
   },
   "dependencies": {
     "react": "^19.3.1",

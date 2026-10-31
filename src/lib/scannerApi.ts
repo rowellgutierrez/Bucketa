@@ -63,6 +63,8 @@ export interface ExtractedEntry {
   currency: string;
   currencyDetected: string | null;
   currencyConflict: boolean;
+  /** Same description, type, amount, and date as another entry in this batch. */
+  possibleDuplicate?: boolean;
   dateText: string | null;
   categorySuggestion: string | null;
   confidence: number;

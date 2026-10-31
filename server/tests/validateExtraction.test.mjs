@@ -25,6 +25,20 @@ test("clean entry passes with integer minor units and no review flag", () => {
   assert.equal(result.totals.expenseMinor, 25000);
 });
 
+test("identical entries in one batch are flagged as possible duplicates, never removed", () => {
+  const result = validateExtraction({ entries: [entry(), entry()] }, "PHP");
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.entries[0].possibleDuplicate, true);
+  assert.equal(result.entries[1].possibleDuplicate, true);
+  assert.equal(result.entries[0].needsReview, true);
+  assert.ok(result.entries[0].reviewReasons.includes("possibleDuplicate"));
+  const distinct = validateExtraction(
+    { entries: [entry(), entry({ amountText: "180.00" })] },
+    "PHP",
+  );
+  assert.equal(distinct.entries[0].possibleDuplicate, false);
+});
+
 test("missing amount is marked for review, never invented", () => {
   const result = validateExtraction(
     { entries: [entry({ amountText: null, uncertainFields: ["amountText"] })] },

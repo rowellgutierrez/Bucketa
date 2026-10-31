@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Profile, Transaction } from "../data/types";
 import {
@@ -28,6 +28,12 @@ import {
   type RecordAmounts,
 } from "../lib/recordForm";
 
+import {
+  buildTransactionCorrectionPatch,
+  isCorrectableTransaction,
+  isScannerConfirmedTransaction,
+} from "../lib/transactionCorrection";
+
 type Status = "loading" | "ready" | "error";
 type EntryType = "income" | "expense";
 
@@ -56,10 +62,6 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime())
     ? value
     : new Intl.DateTimeFormat(DEFAULT_LOCALE, { dateStyle: "medium" }).format(date);
-}
-
-function isEditable(txn: Transaction): boolean {
-  return txn.origin === "manual" && (txn.type === "income" || txn.type === "expense");
 }
 
 interface CurrencySummary {
@@ -94,10 +96,32 @@ export default function TransactionsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Transaction | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const deletePanelRef = useRef<HTMLElement | null>(null);
+
+  // Move focus into the delete confirmation when it opens and return it
+  // to the invoking control when it closes, mirroring the scanner
+  // confirmation pattern. Escape (handled on the panel) only ever
+  // cancels, and never while a deletion is in progress.
+  useEffect(() => {
+    if (!deleteTarget) return;
+    const panel = deletePanelRef.current;
+    if (!panel) return;
+    const trigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panel.focus();
+    return () => {
+      if (trigger && document.contains(trigger)) trigger.focus();
+    };
+  }, [deleteTarget]);
 
   const activeProfile = profiles.find((p) => p.id === profileId);
   const bucketName = (id: string | null) =>
     id ? (buckets.find((b) => b.id === id)?.name ?? "Unknown bucket") : null;
+  const editingTxn = editingId
+    ? transactions.find((t) => t.id === editingId) ?? null
+    : null;
+  const editingScannerRecord =
+    editingTxn !== null && isScannerConfirmedTransaction(editingTxn);
 
   const summaries = useMemo<CurrencySummary[]>(() => {
     const byCurrency = new Map<string, CurrencySummary>();
@@ -240,7 +264,12 @@ export default function TransactionsPage() {
     }
 
     const errors: Record<string, string> = {};
-    const normalizedCurrency = currency.trim().toUpperCase();
+    // A scanned record's currency is locked: corrections always keep the
+    // currency the record was saved in, whatever the form state holds.
+    const normalizedCurrency =
+      editingScannerRecord && editingTxn
+        ? editingTxn.currency
+        : currency.trim().toUpperCase();
     const trimmedDescription = description.trim();
     let amountMinor: number | null = null;
 
@@ -282,7 +311,7 @@ export default function TransactionsPage() {
     setSubmitting(true);
     try {
       if (editing) {
-        if (!isEditable(editing)) {
+        if (!isCorrectableTransaction(editing)) {
           throw new BucketaDataError("This record cannot be edited here.");
         }
         if (amountMinor === null || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
@@ -290,15 +319,21 @@ export default function TransactionsPage() {
           return;
         }
         const validAmountMinor = amountMinor;
-        const updated = await transactionsRepo.update(editing.id, {
-          type,
-          amountMinor: validAmountMinor,
-          currency: normalizedCurrency,
-          date,
-          description: trimmedDescription,
-          category: category.trim() || null,
-          bucketId: bucketId || null,
-        });
+        // The patch builder preserves provenance: for scanned records it
+        // omits currency and bucketId so neither can change here, and it
+        // never carries id, profileId, origin, or relatedId.
+        const updated = await transactionsRepo.update(
+          editing.id,
+          buildTransactionCorrectionPatch(editing, {
+            type,
+            amountMinor: validAmountMinor,
+            currency: normalizedCurrency,
+            date,
+            description: trimmedDescription,
+            category: category.trim() || null,
+            bucketId: bucketId || null,
+          }),
+        );
         setTransactions((prev) =>
           prev
             .map((t) => (t.id === updated.id ? updated : t))
@@ -373,6 +408,10 @@ export default function TransactionsPage() {
 
   async function onDelete() {
     if (!deleteTarget) return;
+    if (!isCorrectableTransaction(deleteTarget)) {
+      setDeleteError("This record cannot be deleted here.");
+      return;
+    }
     if (transactions.some((t) => t.relatedId === deleteTarget.id)) {
       setDeleteError(
         "This transaction is linked to another record and cannot be safely deleted here.",
@@ -500,6 +539,13 @@ export default function TransactionsPage() {
               <h2 className="inline-form-title">
                 {editingId ? "Edit transaction" : "Add transaction"}
               </h2>
+              {editingScannerRecord && (
+                <p className="field-hint" role="status">
+                  Scanned record: you can correct its type, amount, date,
+                  description, and category. Its currency and bucket stay as
+                  scanned and cannot be changed here.
+                </p>
+              )}
               <div className="type-toggle" role="group" aria-label="Transaction type">
                 {(["income", "expense"] as EntryType[]).map((entryType) => (
                   <button
@@ -544,6 +590,7 @@ export default function TransactionsPage() {
                     className="input"
                     type="text"
                     value={currency}
+                    disabled={editingScannerRecord}
                     onChange={(e) =>
                       setCurrency(e.target.value.replace(/[^a-z]/gi, "").toUpperCase())
                     }
@@ -626,6 +673,7 @@ export default function TransactionsPage() {
                     id="txn-bucket"
                     className="input"
                     value={bucketId}
+                    disabled={editingScannerRecord}
                     onChange={(e) => onSelectBucket(e.target.value)}
                     aria-invalid={Boolean(fieldErrors.bucket)}
                     aria-describedby={fieldErrors.bucket ? "txn-bucket-error" : "txn-bucket-hint"}
@@ -684,10 +732,19 @@ export default function TransactionsPage() {
 
           {deleteTarget && (
             <section
+              ref={deletePanelRef}
+              tabIndex={-1}
               className="delete-panel"
               role="alertdialog"
               aria-labelledby="txn-delete-heading"
               aria-describedby="txn-delete-warning"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && !deleting) {
+                  event.preventDefault();
+                  setDeleteTarget(null);
+                  setDeleteError("");
+                }
+              }}
             >
               <h3 id="txn-delete-heading">Delete this transaction?</h3>
               <p id="txn-delete-warning">
@@ -739,7 +796,7 @@ export default function TransactionsPage() {
             ) : (
               <ul className="txn-list">
                 {transactions.map((txn) => {
-                  const editable = isEditable(txn);
+                  const editable = isCorrectableTransaction(txn);
                   const assignedBucket = bucketName(txn.bucketId);
                   return (
                     <li key={txn.id} className="txn-row">
@@ -749,7 +806,11 @@ export default function TransactionsPage() {
                           {formatDate(txn.date)} · {TYPE_LABELS[txn.type]}
                           {txn.category ? ` · ${txn.category}` : ""}
                           {assignedBucket ? ` · ${assignedBucket}` : ""}
-                          {!editable ? ` · ${txn.origin}` : ""}
+                          {txn.origin === "scanner-confirmed"
+                            ? " · Scanned record"
+                            : !editable
+                              ? ` · ${txn.origin}`
+                              : ""}
                         </p>
                       </div>
                       <span

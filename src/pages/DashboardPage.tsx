@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
-import type { Bucket, Profile, Transaction } from "../data/types";
+import { bucketsRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
+import type { Bucket, Product, Profile, Sale, Transaction } from "../data/types";
+import BuckyPanel from "../components/BuckyPanel";
 import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
 import { formatMoney } from "../lib/currency";
@@ -86,6 +87,8 @@ export default function DashboardPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [sales, setSales] = useState<Sale[]>([]);
   const [view, setView] = useState<View>("all");
   const [businessId, setBusinessId] = useState("");
   const [preset, setPreset] = useState<RangePreset>("all");
@@ -97,14 +100,18 @@ export default function DashboardPage() {
     setStatus("loading");
     setLoadError("");
     try {
-      const [allProfiles, allBuckets, allTransactions] = await Promise.all([
+      const [allProfiles, allBuckets, allTransactions, allProducts, allSales] = await Promise.all([
         profilesRepo.listAll(),
         bucketsRepo.listAll(),
         transactionsRepo.listAll(),
+        productsRepo.listAll(),
+        salesRepo.listAll(),
       ]);
       setProfiles(allProfiles);
       setBuckets(allBuckets);
       setTransactions(allTransactions);
+      setProducts(allProducts);
+      setSales(allSales);
       const firstBusiness = allProfiles.find((p) => p.kind === "business");
       if (firstBusiness) setBusinessId((prev) => prev || firstBusiness.id);
       setStatus("ready");
@@ -260,6 +267,21 @@ export default function DashboardPage() {
               />
             )
           )}
+
+          <BuckyPanel
+            profiles={profiles}
+            buckets={buckets}
+            transactions={transactions}
+            products={products}
+            sales={sales}
+            preferredProfileId={
+              view === "business"
+                ? businessId
+                : view === "personal"
+                  ? personalProfiles[0]?.id
+                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
+            }
+          />
 
           {hasAnyTransactions && (
           <div className="selector-bar dash-controls">

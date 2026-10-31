@@ -46,6 +46,7 @@ export interface ScannerDraft {
   currency: string;
   currencyDetected: string | null;
   currencyConflict: boolean;
+  possibleDuplicate: boolean;
   confidence: number;
   uncertainFields: string[];
   reviewReasons: string[];
@@ -207,6 +208,7 @@ export function buildScannerDrafts(
       currency: result.currency,
       currencyDetected: entry.currencyDetected,
       currencyConflict: entry.currencyConflict,
+      possibleDuplicate: entry.possibleDuplicate ?? false,
       confidence: entry.confidence,
       uncertainFields: [...entry.uncertainFields],
       reviewReasons: [...entry.reviewReasons],
@@ -224,6 +226,7 @@ export function buildScannerDrafts(
 export function requiresExplicitConfirmation(draft: ScannerDraft): boolean {
   return (
     draft.currencyConflict ||
+    draft.possibleDuplicate ||
     draft.arithmeticMismatch ||
     draft.confidence < 0.8 ||
     draft.uncertainFields.length > 0 ||
@@ -243,6 +246,7 @@ const SCANNER_WARNING_LABELS: Record<string, string> = {
   description: "Check description",
   type: "Check income or expense",
   currencyDetected: "Verify currency",
+  possibleDuplicate: "Possible duplicate of another entry in this scan",
   confidence: "Please review this entry",
 };
 
@@ -646,69 +650,112 @@ export function scannerDraftAmountMinor(
   }
 }
 
-/** Validate one draft using scanner-specific rules. */
-export function validateScannerDraft(
+/**
+ * Editable/reviewable areas of one scanner draft. "entry" holds problems
+ * that belong to the entry as a whole (wrong profile kind, currency lock)
+ * and "confirmation" holds unmet explicit-confirmation requirements;
+ * neither is tied to a single input control.
+ */
+export type ScannerDraftField =
+  | "description"
+  | "type"
+  | "amount"
+  | "date"
+  | "category"
+  | "confirmation"
+  | "entry";
+
+export type ScannerDraftFieldErrors = Partial<
+  Record<ScannerDraftField, string[]>
+>;
+
+/**
+ * Validate one draft using scanner-specific rules, grouped by field so
+ * the review form can attach each error to its control. Messages and
+ * rules are identical to validateScannerDraft, which flattens this map.
+ */
+export function validateScannerDraftFields(
   draft: ScannerDraft,
   context: ScannerReviewContext,
-): string[] {
-  const errors: string[] = [];
+): ScannerDraftFieldErrors {
+  const fields: ScannerDraftFieldErrors = {};
+  const push = (field: ScannerDraftField, message: string) => {
+    (fields[field] ??= []).push(message);
+  };
 
   if (context.recordType === "salaries" && context.profileKind !== "business") {
-    errors.push("Salaries can only be saved for a business profile.");
+    push("entry", "Salaries can only be saved for a business profile.");
   }
-  if (!draft.description.trim()) errors.push("Description is required.");
+  if (!draft.description.trim()) push("description", "Description is required.");
 
   if (!draft.type) {
-    errors.push("Choose income or expense.");
+    push("type", "Choose income or expense.");
   } else if (context.recordType === "salaries" && draft.type !== "expense") {
-    errors.push("Salary records must be saved as expenses.");
+    push("type", "Salary records must be saved as expenses.");
   }
 
   if (!draft.amountText.trim()) {
-    errors.push("Amount is required.");
+    push("amount", "Amount is required.");
   } else {
     try {
       const amount = parseAmountToMinorUnits(
         draft.amountText,
         context.expectedCurrency,
       );
-      if (amount <= 0) errors.push("Amount must be greater than zero.");
+      if (amount <= 0) push("amount", "Amount must be greater than zero.");
     } catch (error) {
-      errors.push(
+      push(
+        "amount",
         error instanceof Error ? error.message : "Amount is invalid.",
       );
     }
   }
 
   if (!draft.date) {
-    errors.push(
+    push(
+      "date",
       draft.dateHint
         ? `Enter the date as YYYY-MM-DD. The scan read “${draft.dateHint}”, which Bucketa could not safely convert to a single calendar date.`
         : "Date is required.",
     );
   } else if (!isValidCalendarDate(draft.date)) {
-    errors.push("Enter a real calendar date.");
+    push("date", "Enter a real calendar date.");
   }
 
   if (draft.currency !== context.expectedCurrency) {
-    errors.push(`Currency must remain ${context.expectedCurrency}.`);
+    push("entry", `Currency must remain ${context.expectedCurrency}.`);
   }
-  if (draft.currencyConflict && !draft.explicitlyConfirmed) {
-    errors.push(
+  if (draft.possibleDuplicate && !draft.explicitlyConfirmed) {
+    push(
+      "confirmation",
+      "Confirm this is not a duplicate of another entry in this scan, or remove one copy.",
+    );
+  } else if (draft.currencyConflict && !draft.explicitlyConfirmed) {
+    push(
+      "confirmation",
       `Confirm that this amount is in ${context.expectedCurrency}, not ${draft.currencyDetected ?? "the detected currency"}.`,
     );
   } else if (scannerDraftAmountMismatch(draft) && !draft.explicitlyConfirmed) {
-    errors.push(
+    push(
+      "confirmation",
       `Confirm the checked amount: quantity × unit price is ${draft.expectedAmountMinor !== null ? formatDraftMinor(draft.expectedAmountMinor, context.expectedCurrency) : "unclear"}, which does not match the entered amount.`,
     );
   } else if (
     requiresExplicitConfirmation(draft) &&
     !draft.explicitlyConfirmed
   ) {
-    errors.push("Confirm that you checked this uncertain entry.");
+    push("confirmation", "Confirm that you checked this uncertain entry.");
   }
 
-  return errors;
+  return fields;
+}
+
+/** Validate one draft using scanner-specific rules. */
+export function validateScannerDraft(
+  draft: ScannerDraft,
+  context: ScannerReviewContext,
+): string[] {
+  return Object.values(validateScannerDraftFields(draft, context)).flat();
 }
 
 export function validateScannerDrafts(

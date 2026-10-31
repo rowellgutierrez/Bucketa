@@ -19,6 +19,7 @@ import {
   scannerGrandTotalReconciliation,
   scannerReviewWarnings,
   validateScannerDraft,
+  validateScannerDraftFields,
   type ScannerReviewContext,
 } from "./scannerReview.ts";
 
@@ -1147,4 +1148,37 @@ test("salaries are business expenses only", () => {
   );
   assert.equal(transactions[0].type, "expense");
   assert.equal(transactions[0].category, "Salaries");
+});
+
+test("field-grouped validation attaches each error to its field", () => {
+  const drafts = buildScannerDrafts(response(), "expenses", "batch-9");
+  // Second draft: missing amount and date, low confidence.
+  const fields = validateScannerDraftFields(drafts[1], context);
+  assert.match((fields.amount ?? []).join(" "), /Amount is required/);
+  assert.match((fields.date ?? []).join(" "), /Date is required/);
+  assert.match(
+    (fields.confirmation ?? []).join(" "),
+    /checked this uncertain entry/,
+  );
+  assert.equal(fields.description, undefined);
+  // Flattened validation still reports the same messages.
+  assert.deepEqual(
+    validateScannerDraft(drafts[1], context).sort(),
+    Object.values(fields).flat().sort(),
+  );
+});
+
+test("field-grouped validation keeps valid drafts and review states distinct", () => {
+  const drafts = buildScannerDrafts(response(), "expenses", "batch-9");
+  assert.deepEqual(validateScannerDraftFields(drafts[0], context), {});
+  // An uncertain-but-complete entry has no field errors, only a
+  // confirmation requirement; warnings stay separate from errors.
+  const uncertain = { ...drafts[0], needsReview: true, reviewReasons: ["confidence"] };
+  const fields = validateScannerDraftFields(uncertain, context);
+  assert.equal(fields.amount, undefined);
+  assert.match(
+    (fields.confirmation ?? []).join(" "),
+    /checked this uncertain entry/,
+  );
+  assert.ok(scannerReviewWarnings(uncertain).length > 0);
 });

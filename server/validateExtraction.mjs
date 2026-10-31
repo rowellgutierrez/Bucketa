@@ -129,6 +129,39 @@ export function validateExtraction(raw, expectedCurrency) {
     };
   });
 
+  // Potential duplicates within this batch: same normalised description,
+  // type, parsed amount, and date text. Flagged for review only — entries
+  // are never removed or merged automatically, because two identical
+  // handwritten lines can be legitimate separate purchases.
+  const duplicateKeys = new Map();
+  for (const entry of entries) {
+    if (!entry.description || entry.amountMinor === null || !entry.type) continue;
+    const key = [
+      entry.description.toLowerCase().replace(/\s+/g, " "),
+      entry.type,
+      entry.amountMinor,
+      (entry.dateText ?? "").toLowerCase(),
+    ].join("|");
+    duplicateKeys.set(key, (duplicateKeys.get(key) ?? 0) + 1);
+  }
+  for (const entry of entries) {
+    entry.possibleDuplicate = false;
+    if (!entry.description || entry.amountMinor === null || !entry.type) continue;
+    const key = [
+      entry.description.toLowerCase().replace(/\s+/g, " "),
+      entry.type,
+      entry.amountMinor,
+      (entry.dateText ?? "").toLowerCase(),
+    ].join("|");
+    if ((duplicateKeys.get(key) ?? 0) > 1) {
+      entry.possibleDuplicate = true;
+      if (!entry.reviewReasons.includes("possibleDuplicate")) {
+        entry.reviewReasons.push("possibleDuplicate");
+      }
+      entry.needsReview = true;
+    }
+  }
+
   const documentTotalText = cleanString(raw.documentTotalText);
   // The written document total is review evidence only. Parse it with the
   // same currency-aware parser as entry amounts, but never include it in

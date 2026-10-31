@@ -38,6 +38,11 @@ import {
   type RecordAmounts,
 } from "../lib/recordForm";
 import Bucky from "../components/Bucky";
+import {
+  buildTransactionCorrectionPatch,
+  isCorrectableTransaction,
+  isScannerConfirmedTransaction,
+} from "../lib/transactionCorrection";
 
 type Status = "loading" | "ready" | "error";
 type EntryType = "income" | "expense";
@@ -146,8 +151,31 @@ export default function PersonalPage() {
   const [deleteBucket, setDeleteBucket] = useState<Bucket | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const deleteTxnPanelRef = useRef<HTMLElement | null>(null);
+
+  // Move focus into the record-delete confirmation when it opens and
+  // return it to the invoking control when it closes, mirroring the
+  // scanner confirmation pattern. Escape (handled on the panel) only
+  // ever cancels, and never while a deletion is in progress. The bucket
+  // delete panel intentionally keeps its existing behaviour.
+  useEffect(() => {
+    if (!deleteTxn) return;
+    const panel = deleteTxnPanelRef.current;
+    if (!panel) return;
+    const trigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panel.focus();
+    return () => {
+      if (trigger && document.contains(trigger)) trigger.focus();
+    };
+  }, [deleteTxn]);
 
   const activeProfile = profiles.find((p) => p.id === profileId);
+  const editingTxn = editingTxnId
+    ? transactions.find((t) => t.id === editingTxnId) ?? null
+    : null;
+  const editingScannerRecord =
+    editingTxn !== null && isScannerConfirmedTransaction(editingTxn);
   const movementBucket = buckets.find((b) => b.id === movementBucketId);
   const summaries = useMemo(() => summarizeTransactions(transactions), [transactions]);
   const categories = useMemo(() => {
@@ -330,7 +358,12 @@ export default function PersonalPage() {
     event.preventDefault();
     if (!activeProfile) return;
     const errors: Record<string, string> = {};
-    const normalized = currency.trim().toUpperCase();
+    // A scanned record's currency is locked: corrections always keep the
+    // currency the record was saved in, whatever the form state holds.
+    const normalized =
+      editingScannerRecord && editingTxn
+        ? editingTxn.currency
+        : currency.trim().toUpperCase();
     const trimmedDescription = description.trim();
     let amountMinor: number | null = null;
     let planned: PlannedEntry[] = [];
@@ -369,16 +402,30 @@ export default function PersonalPage() {
     setSavingRecord(true);
     try {
       if (editingTxnId) {
+        if (!editingTxn || !isCorrectableTransaction(editingTxn)) {
+          setRecordError("This record cannot be edited here.");
+          return;
+        }
         if (amountMinor === null || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
           setRecordError("Enter a valid amount greater than zero.");
           return;
         }
         const validAmountMinor = amountMinor;
-        const updated = await transactionsRepo.update(editingTxnId, {
-          type, amountMinor: validAmountMinor, currency: normalized, date,
-          description: trimmedDescription, category: category.trim() || null,
-          bucketId: bucketId || null,
-        });
+        // The patch builder preserves provenance: for scanned records it
+        // omits currency and bucketId so neither can change here, and it
+        // never carries id, profileId, origin, or relatedId.
+        const updated = await transactionsRepo.update(
+          editingTxnId,
+          buildTransactionCorrectionPatch(editingTxn, {
+            type,
+            amountMinor: validAmountMinor,
+            currency: normalized,
+            date,
+            description: trimmedDescription,
+            category: category.trim() || null,
+            bucketId: bucketId || null,
+          }),
+        );
         setTransactions((prev) => sortTxns(prev.map((t) => (t.id === updated.id ? updated : t))));
         setNotice("Personal record updated.");
         setCelebrateKey((k) => k + 1);
@@ -625,6 +672,10 @@ export default function PersonalPage() {
 
   async function onDeleteTxn() {
     if (!deleteTxn) return;
+    if (!isCorrectableTransaction(deleteTxn)) {
+      setDeleteError("This record cannot be deleted here.");
+      return;
+    }
     if (transactions.some((t) => t.relatedId === deleteTxn.id)) {
       setDeleteError("This record is linked to another record and cannot be safely deleted here.");
       return;
@@ -879,6 +930,13 @@ export default function PersonalPage() {
                       record only, and your totals recalculate automatically.
                     </p>
                   )}
+                  {editingScannerRecord && (
+                    <p className="field-hint" role="status">
+                      Scanned record: you can correct its type, amount, date,
+                      description, and category. Its currency and savings /
+                      budget bucket stay as scanned and cannot be changed here.
+                    </p>
+                  )}
                   <div className="type-toggle" role="group" aria-label="Record type">
                     {(["income", "expense"] as EntryType[]).map((entryType) => (
                       <button
@@ -918,6 +976,7 @@ export default function PersonalPage() {
                         className="input"
                         type="text"
                         value={currency}
+                        disabled={editingScannerRecord}
                         onChange={(e) =>
                           setCurrency(e.target.value.replace(/[^a-z]/gi, "").toUpperCase())
                         }
@@ -989,6 +1048,7 @@ export default function PersonalPage() {
                         id="personal-bucket"
                         className="input"
                         value={bucketId}
+                        disabled={editingScannerRecord}
                         onChange={(e) => setBucketId(e.target.value)}
                         aria-invalid={Boolean(recordErrors.bucket)}
                         aria-describedby={recordErrors.bucket ? "personal-bucket-error" : undefined}
@@ -1434,7 +1494,20 @@ export default function PersonalPage() {
               </section>
 
               {deleteTxn && (
-                <section className="delete-panel" role="alertdialog" aria-labelledby="personal-delete-heading">
+                <section
+                  ref={deleteTxnPanelRef}
+                  tabIndex={-1}
+                  className="delete-panel"
+                  role="alertdialog"
+                  aria-labelledby="personal-delete-heading"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && !deleting) {
+                      event.preventDefault();
+                      setDeleteTxn(null);
+                      setDeleteError("");
+                    }
+                  }}
+                >
                   <h3 id="personal-delete-heading">Delete this record?</h3>
                   <p>
                     <strong>{deleteTxn.description}</strong> —{" "}
@@ -1468,7 +1541,7 @@ export default function PersonalPage() {
                   </span>
                 </div>
                 {transactions.length > 0 && (
-                  <div className="type-toggle" role="group" aria-label="Filter personal history">
+                  <div className="type-toggle personal-history-filter" role="group" aria-label="Filter personal history">
                     {(
                       [
                         { id: "all", label: "All" },
@@ -1514,8 +1587,7 @@ export default function PersonalPage() {
                 ) : (
                   <ul className="txn-list">
                     {filteredTransactions.map((txn) => {
-                      const editable =
-                        txn.origin === "manual" && (txn.type === "income" || txn.type === "expense");
+                      const editable = isCorrectableTransaction(txn);
                       const assigned = bucketSelectName(txn.bucketId);
                       return (
                         <li key={txn.id} className="txn-row">
@@ -1525,9 +1597,11 @@ export default function PersonalPage() {
                               {formatDate(txn.date)} · {TXN_TYPE_LABELS[txn.type]}
                               {txn.category ? ` · ${txn.category}` : ""}
                               {assigned ? ` · ${assigned}` : ""}
-                              {!editable && txn.type !== "savings-deposit" && txn.type !== "savings-withdrawal"
-                                ? ` · ${txn.origin}`
-                                : ""}
+                              {txn.origin === "scanner-confirmed"
+                                ? " · Scanned record"
+                                : !editable && txn.type !== "savings-deposit" && txn.type !== "savings-withdrawal"
+                                  ? ` · ${txn.origin}`
+                                  : ""}
                             </p>
                           </div>
                           <span

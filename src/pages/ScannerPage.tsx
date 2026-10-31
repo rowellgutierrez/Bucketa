@@ -31,9 +31,12 @@ import {
   scannerGrandTotalAcknowledgmentSatisfied,
   scannerGrandTotalReconciliation,
   scannerReviewWarnings,
+  validateScannerDraftFields,
   validateScannerDrafts,
   type ScannerDateFormat,
   type ScannerDraft,
+  type ScannerDraftField,
+  type ScannerDraftFieldErrors,
   type ScannerEntryType,
   type ScannerReviewContext,
 } from "../lib/scannerReview";
@@ -157,11 +160,15 @@ function storeScannerDateFormat(format: ScannerDateFormat) {
 
 interface ScannerDateEditorProps {
   draft: ScannerDraft;
+  entryNumber: number;
   dateFormat: ScannerDateFormat;
   disabled: boolean;
   onCommit: (transactionId: string, enteredText: string) => void;
   onCalendarSelection: (transactionId: string, pickerValue: string) => void;
   onEditingChange: (transactionId: string, dirty: boolean) => void;
+  onFieldBlur: (transactionId: string) => void;
+  /** Draft-level date error element to link via aria-describedby, if any. */
+  fieldErrorId: string | null;
 }
 
 /**
@@ -178,11 +185,14 @@ interface ScannerDateEditorProps {
  */
 function ScannerDateEditor({
   draft,
+  entryNumber,
   dateFormat,
   disabled,
   onCommit,
   onCalendarSelection,
   onEditingChange,
+  onFieldBlur,
+  fieldErrorId,
 }: ScannerDateEditorProps) {
   const committedText = formatScannerDateForDisplay(draft.date, dateFormat);
   const [text, setText] = useState(committedText);
@@ -236,6 +246,7 @@ function ScannerDateEditor({
     setShowError(resolveScannerDateEdit(text, dateFormat).status === "invalid");
     onEditingChange(draft.transactionId, false);
     if (text !== committedText) onCommit(draft.transactionId, text);
+    onFieldBlur(draft.transactionId);
   };
 
   const openCalendar = () => {
@@ -267,6 +278,7 @@ function ScannerDateEditor({
     setEditing(false);
     onEditingChange(draft.transactionId, false);
     onCalendarSelection(draft.transactionId, value);
+    onFieldBlur(draft.transactionId);
   };
 
   return (
@@ -274,6 +286,7 @@ function ScannerDateEditor({
       <div className="scanner-date-editor">
         <input
           ref={textInputRef}
+          id={`scanner-date-${draft.transactionId}`}
           className="input scanner-edit-input"
           type="text"
           value={text}
@@ -282,9 +295,13 @@ function ScannerDateEditor({
           autoComplete="off"
           spellCheck={false}
           placeholder={dateFormat}
-          aria-label="Date"
-          aria-invalid={showError}
-          aria-describedby={showError ? `${hintId} ${errorId}` : hintId}
+          aria-label={`Date for entry ${entryNumber}`}
+          aria-invalid={showError || fieldErrorId !== null}
+          aria-describedby={
+            [hintId, showError ? errorId : null, fieldErrorId]
+              .filter(Boolean)
+              .join(" ") || undefined
+          }
           onFocus={() => {
             cancelNextCommitRef.current = false;
             setEditing(true);
@@ -347,7 +364,7 @@ function ScannerDateEditor({
           className="scanner-date-picker-btn"
           type="button"
           disabled={disabled}
-          aria-label="Choose date from calendar"
+          aria-label={`Choose date from calendar for entry ${entryNumber}`}
           title="Choose date from calendar"
           onClick={openCalendar}
         >
@@ -376,7 +393,10 @@ function ScannerDateEditor({
           onChange={(event) => handlePickerChange(event.target.value)}
         />
       </div>
-      <span className="field-hint" id={hintId}>Format: {dateFormat}</span>
+      {/* Visually hidden: the format is already explained once at the
+          date-format control above the entries; screen readers still get
+          it per entry through aria-describedby. */}
+      <span className="sr-only" id={hintId}>Format: {dateFormat}</span>
       {pickerUnavailable && (
         <span className="field-hint">
           Calendar is not available in this browser. Type the date as {dateFormat}.
@@ -426,6 +446,14 @@ export default function ScannerPage() {
   const [batchId, setBatchId] = useState("");
   const [reviewRecordType, setReviewRecordType] = useState<ScannerRecordType>("expenses");
   const [saveAttempted, setSaveAttempted] = useState(false);
+  // Fields the reviewer has edited and left, keyed `${transactionId}:${field}`.
+  // Their validation errors show immediately; untouched fields stay quiet
+  // until a save attempt, so a fresh scan never opens covered in errors.
+  const [touchedFields, setTouchedFields] = useState<ReadonlySet<string>>(new Set());
+  // Which review cards are expanded, keyed by stable transactionId.
+  // Collapse only hides the card body (inputs stay mounted), so edited
+  // values and partially entered dates are never lost by collapsing.
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const [confirmingSave, setConfirmingSave] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -438,6 +466,14 @@ export default function ScannerPage() {
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftDiscardPanelRef = useRef<HTMLDivElement | null>(null);
+  const liveConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const liveConfirmTriggerRef = useRef<HTMLElement | null>(null);
+  const saveConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const saveConfirmTriggerRef = useRef<HTMLElement | null>(null);
+  const scanButtonRef = useRef<HTMLButtonElement | null>(null);
+  const reviewSaveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const errorSummaryRef = useRef<HTMLDivElement | null>(null);
+  const focusErrorSummaryRef = useRef(false);
   const removalDialogRef = useRef<HTMLDialogElement | null>(null);
   const removalCancelRef = useRef<HTMLButtonElement | null>(null);
   const removalConfirmedRef = useRef(false);
@@ -513,6 +549,44 @@ export default function ScannerPage() {
     panel.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     panel.focus({ preventScroll: true });
   }, [pendingDraftDiscard]);
+
+  // Same focus treatment for the live-send confirmation: focus moves into
+  // the panel when it opens and returns to the control that opened it
+  // (or the scan button, if that control has unmounted) when it closes.
+  useEffect(() => {
+    if (!confirmingLiveSend) return;
+    const panel = liveConfirmPanelRef.current;
+    if (!panel) return;
+    const trigger = liveConfirmTriggerRef.current;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    panel.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    panel.focus({ preventScroll: true });
+    return () => {
+      if (trigger && document.contains(trigger)) trigger.focus();
+      else scanButtonRef.current?.focus();
+    };
+  }, [confirmingLiveSend]);
+
+  // Same for the final-save confirmation; if the "Review final save"
+  // button unmounted because the batch saved, focus lands on the results
+  // heading above the success message instead of being lost.
+  useEffect(() => {
+    if (!confirmingSave) return;
+    const panel = saveConfirmPanelRef.current;
+    if (!panel) return;
+    const trigger = saveConfirmTriggerRef.current;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    panel.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    panel.focus({ preventScroll: true });
+    return () => {
+      if (trigger && document.contains(trigger)) trigger.focus();
+      else if (reviewSaveButtonRef.current) reviewSaveButtonRef.current.focus();
+      else
+        document
+          .querySelector<HTMLElement>("[data-scanner-results-heading]")
+          ?.focus();
+    };
+  }, [confirmingSave]);
 
   const checkConnection = useCallback(async () => {
     setHealthStatus("checking");
@@ -622,6 +696,8 @@ export default function ScannerPage() {
   function clearReview() {
     setResult(null);
     setDrafts([]);
+    setTouchedFields(new Set());
+    setExpandedIds(new Set());
     setPendingRemovalId(null);
     setBatchId("");
     setSaveAttempted(false);
@@ -647,6 +723,10 @@ export default function ScannerPage() {
     switch (action.kind) {
       case "rescan":
         if (extractionMode === "live") {
+          liveConfirmTriggerRef.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
           setConfirmingLiveSend(true);
           return;
         }
@@ -764,7 +844,19 @@ export default function ScannerPage() {
       setBatchId(nextBatchId);
       setReviewRecordType(requestRecordType);
       setResult(nextResult);
-      setDrafts(buildScannerDrafts(nextResult, requestRecordType, nextBatchId));
+      const nextDrafts = buildScannerDrafts(nextResult, requestRecordType, nextBatchId);
+      setDrafts(nextDrafts);
+      // Entries needing attention start expanded. Valid entries start
+      // expanded on wide screens and collapsed on narrow ones, where a
+      // fully expanded review becomes excessively long.
+      const wideScreen = window.innerWidth > 900;
+      setExpandedIds(
+        new Set(
+          nextDrafts
+            .filter((draft) => wideScreen || requiresExplicitConfirmation(draft))
+            .map((draft) => draft.transactionId),
+        ),
+      );
     } catch (error) {
       const message = errorMessage(error);
       setExtractError(
@@ -802,6 +894,73 @@ export default function ScannerPage() {
   const invalidDraftCount = drafts.filter(
     (draft) => (draftErrors.get(draft.transactionId) ?? []).length > 0,
   ).length;
+  const draftFieldErrors = useMemo<Map<string, ScannerDraftFieldErrors>>(
+    () =>
+      new Map(
+        drafts.map((draft) => [
+          draft.transactionId,
+          result ? validateScannerDraftFields(draft, reviewContext) : {},
+        ]),
+      ),
+    // reviewContext is intentionally rebuilt from its primitive inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [drafts, result, batchId, profileId, activeProfile?.kind, bucketId, expectedCurrency, reviewRecordType],
+  );
+  const invalidDrafts = drafts.filter(
+    (draft) => (draftErrors.get(draft.transactionId) ?? []).length > 0,
+  );
+
+  // After a failed save attempt, move focus to the error summary so
+  // keyboard and screen-reader users land on the list of problems.
+  useEffect(() => {
+    if (!focusErrorSummaryRef.current) return;
+    if (!saveAttempted || invalidDraftCount === 0) return;
+    focusErrorSummaryRef.current = false;
+    errorSummaryRef.current?.focus();
+  }, [saveAttempted, invalidDraftCount]);
+
+  function markFieldTouched(transactionId: string, field: ScannerDraftField) {
+    setTouchedFields((current) => {
+      const key = `${transactionId}:${field}`;
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+  }
+
+  function fieldErrorsVisible(transactionId: string, field: ScannerDraftField): string[] {
+    if (!saveAttempted && !touchedFields.has(`${transactionId}:${field}`)) return [];
+    return draftFieldErrors.get(transactionId)?.[field] ?? [];
+  }
+
+  function focusFirstInvalidField(draft: ScannerDraft) {
+    const fields = draftFieldErrors.get(draft.transactionId) ?? {};
+    const order: ScannerDraftField[] = [
+      "description",
+      "type",
+      "amount",
+      "date",
+      "category",
+      "confirmation",
+      "entry",
+    ];
+    // Collapsed card bodies are hidden, so expand before focusing.
+    expandEntries([draft.transactionId]);
+    for (const field of order) {
+      if ((fields[field] ?? []).length === 0) continue;
+      const targetId =
+        field === "confirmation" || field === "entry"
+          ? `scanner-confirm-${draft.transactionId}`
+          : `scanner-${field}-${draft.transactionId}`;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document.getElementById(targetId)?.focus();
+        });
+      });
+      return;
+    }
+  }
   const draftTotals = useMemo(
     () => scannerDraftTotals(drafts, expectedCurrency),
     [drafts, expectedCurrency],
@@ -856,6 +1015,33 @@ export default function ScannerPage() {
       return next.size === current.size ? current : next;
     });
   }, [drafts]);
+
+  // Drop expansion state for entries that no longer exist.
+  useEffect(() => {
+    setExpandedIds((current) => {
+      if (current.size === 0) return current;
+      const ids = new Set(drafts.map((draft) => draft.transactionId));
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [drafts]);
+
+  function toggleEntryExpanded(transactionId: string) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(transactionId)) next.delete(transactionId);
+      else next.add(transactionId);
+      return next;
+    });
+  }
+
+  function expandEntries(transactionIds: string[]) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      for (const id of transactionIds) next.add(id);
+      return next;
+    });
+  }
 
   function commitDraftDate(transactionId: string, enteredText: string) {
     if (saveLocked) return;
@@ -938,6 +1124,9 @@ export default function ScannerPage() {
     const index = drafts.findIndex((draft) => draft.transactionId === transactionId);
     const remaining = drafts.filter((draft) => draft.transactionId !== transactionId);
     setDrafts(remaining);
+    setTouchedFields((current) =>
+      new Set([...current].filter((key) => !key.startsWith(`${transactionId}:`))),
+    );
     // The removed entry's button unmounts, so move keyboard focus to the
     // next remaining entry's remove button (or the previous one, or the
     // results heading when nothing remains) instead of losing it.
@@ -964,6 +1153,10 @@ export default function ScannerPage() {
       return;
     }
     if (invalidDraftCount > 0) {
+      focusErrorSummaryRef.current = true;
+      // Automatically expand every affected entry so its errors and
+      // mandatory confirmations are visible and actionable.
+      expandEntries(invalidDrafts.map((draft) => draft.transactionId));
       setSaveError(
         `Fix ${invalidDraftCount} ${invalidDraftCount === 1 ? "entry" : "entries"} or remove them before saving.`,
       );
@@ -975,6 +1168,8 @@ export default function ScannerPage() {
       );
       return;
     }
+    saveConfirmTriggerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setConfirmingSave(true);
   }
 
@@ -1264,7 +1459,7 @@ export default function ScannerPage() {
           </div>
 
           <div className="row-actions">
-            <button className="btn" type="button" disabled={!canExtract} onClick={onScanButtonClick}>
+            <button ref={scanButtonRef} className="btn" type="button" disabled={!canExtract} onClick={onScanButtonClick}>
               {extracting
                 ? "Scanning…"
                 : extractionMode === "live"
@@ -1305,14 +1500,28 @@ export default function ScannerPage() {
             </div>
           )}
           {confirmingLiveSend && !pendingDraftDiscard && (
-            <div className="scanner-confirm-panel" role="alertdialog" aria-labelledby="scanner-live-confirm-heading">
+            <div
+              ref={liveConfirmPanelRef}
+              tabIndex={-1}
+              className="scanner-confirm-panel"
+              role="alertdialog"
+              aria-labelledby="scanner-live-confirm-heading"
+              aria-describedby="scanner-live-confirm-detail scanner-live-confirm-warning"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setConfirmingLiveSend(false);
+                  setLiveTestToken("");
+                }
+              }}
+            >
               <h3 id="scanner-live-confirm-heading">Send this image to Meta AI?</h3>
-              <p>
+              <p id="scanner-live-confirm-detail">
                 Send <strong>{fileName || "the selected image"}</strong> for{" "}
                 <strong>{activeProfile?.name}</strong> as {recordType} in {expectedCurrency},
                 through the local Bucketa backend.
               </p>
-              <p className="scanner-warning" role="note">
+              <p className="scanner-warning" role="note" id="scanner-live-confirm-warning">
                 This uses one live-request attempt even if extraction fails.
                 Live requests remaining before this attempt: {liveRequestsRemaining ?? "unavailable"}.
                 Nothing is saved automatically; you must review and confirm every entry.
@@ -1357,9 +1566,9 @@ export default function ScannerPage() {
             {result.currency}. Nothing is saved until you confirm the final save below.
           </p>
           <p className="scanner-warning" role="note">
-            <strong>Before you save:</strong> scanner-confirmed records cannot
-            currently be edited or deleted through the existing history pages.
-            Check every entry carefully, or remove entries you do not want to keep.
+            <strong>Before you save:</strong> check every entry carefully, or
+            remove entries you do not want to keep. After saving, you can
+            still correct or delete each record from the history pages.
           </p>
           {reviewRecordType === "salaries" && activeProfile?.kind !== "business" && (
             <p className="alert-error" role="alert">
@@ -1398,20 +1607,7 @@ export default function ScannerPage() {
                     : `Dates are entered and shown as ${dateFormat}; saved dates do not change.`}
                 </span>
               </div>
-              <div className="scanner-table-wrap">
-                <table className="scanner-table scanner-edit-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">Description</th>
-                      <th scope="col">Type</th>
-                      <th scope="col">Amount ({expectedCurrency})</th>
-                      <th scope="col">Date</th>
-                      <th scope="col">Category</th>
-                      <th scope="col">Review</th>
-                      <th scope="col">Remove</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              <div className="scanner-entry-list">
                     {draftGroups.map((group) => {
                       const summaryParts: string[] = [];
                       if (group.summary.salesMinor !== 0) {
@@ -1429,8 +1625,7 @@ export default function ScannerPage() {
                       summaryParts.push(`Net ${formatMoney(group.summary.netMinor, expectedCurrency)}`);
                       return (
                         <Fragment key={group.key}>
-                          <tr className="scanner-date-group-row">
-                            <td colSpan={7}>
+                          <div className="scanner-date-group-card">
                               <span className="scanner-date-group-title">
                                 {group.needsDateReview
                                   ? "Needs Date Review"
@@ -1449,46 +1644,168 @@ export default function ScannerPage() {
                                   ? ` · ${group.summary.incompleteEntries} incomplete — not included in totals`
                                   : ""}
                               </span>
-                            </td>
-                          </tr>
+                          </div>
                           {group.drafts.map((draft) => {
                             const index = drafts.indexOf(draft);
-                            const errors = draftErrors.get(draft.transactionId) ?? [];
+                            const entryNumber = index + 1;
                             const warnings = scannerReviewWarnings(draft);
-                            const showErrors = saveAttempted && errors.length > 0;
+                            const entryErrors = draftErrors.get(draft.transactionId) ?? [];
+                            const awaitingConfirmation =
+                              requiresExplicitConfirmation(draft) && !draft.explicitlyConfirmed;
+                            const statusLabel =
+                              entryErrors.length > 0
+                                ? "Has errors"
+                                : awaitingConfirmation
+                                  ? "Needs review"
+                                  : "Ready";
+                            const statusClass =
+                              entryErrors.length > 0
+                                ? "scanner-entry-status is-error"
+                                : awaitingConfirmation
+                                  ? "scanner-entry-status is-review"
+                                  : "scanner-entry-status is-ready";
+                            const expanded = expandedIds.has(draft.transactionId);
+                            const descriptionErrors = fieldErrorsVisible(draft.transactionId, "description");
+                            const typeErrors = fieldErrorsVisible(draft.transactionId, "type");
+                            const amountErrors = fieldErrorsVisible(draft.transactionId, "amount");
+                            const dateErrors = fieldErrorsVisible(draft.transactionId, "date");
+                            const reviewErrors = [
+                              ...(saveAttempted ? (draftFieldErrors.get(draft.transactionId)?.entry ?? []) : []),
+                              ...(saveAttempted ? (draftFieldErrors.get(draft.transactionId)?.confirmation ?? []) : []),
+                            ];
                             return (
-                              <tr key={draft.transactionId}>
-                          <td data-label="Description">
+                              <article key={draft.transactionId} className="scanner-entry-card">
+                                <div className="scanner-entry-head">
+                                  <button
+                                    type="button"
+                                    className="scanner-entry-toggle"
+                                    aria-expanded={expanded}
+                                    aria-controls={`scanner-entry-body-${draft.transactionId}`}
+                                    onClick={() => toggleEntryExpanded(draft.transactionId)}
+                                  >
+                                    <span className="scanner-entry-title">
+                                      Entry {entryNumber}: {draft.description.trim() || "Untitled entry"}
+                                    </span>
+                                    <span className="scanner-entry-meta">
+                                      {draft.type
+                                        ? draft.type === "income"
+                                          ? reviewRecordType === "sales"
+                                            ? "Sales (Income)"
+                                            : "Income"
+                                          : "Expense"
+                                        : "No type"}{" "}
+                                      · {draft.amountText.trim()
+                                        ? `${expectedCurrency} ${draft.amountText.trim()}`
+                                        : "No amount"}{" "}
+                                      · {draft.date
+                                        ? formatScannerDateForDisplay(draft.date, dateFormat)
+                                        : "No date"}
+                                    </span>
+                                    <span className={statusClass}>
+                                      {statusLabel}
+                                      {entryErrors.length > 0
+                                        ? ` · ${entryErrors.length} ${entryErrors.length === 1 ? "error" : "errors"}`
+                                        : ""}
+                                      {warnings.length > 0
+                                        ? ` · ${warnings.length} ${warnings.length === 1 ? "warning" : "warnings"}`
+                                        : ""}
+                                    </span>
+                                    <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+                                  </button>
+                                  <button
+                                    className="scanner-remove-btn"
+                                    type="button"
+                                    disabled={saveLocked}
+                                    aria-label={`Remove entry ${entryNumber}${draft.description.trim() ? `: ${draft.description.trim()}` : ""}`}
+                                    title="Remove this entry"
+                                    data-scanner-remove={draft.transactionId}
+                                    onClick={() => requestRemoveDraft(draft.transactionId)}
+                                  >
+                                    <svg
+                                      viewBox="0 0 24 24"
+                                      width="17"
+                                      height="17"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.8"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      aria-hidden="true"
+                                      focusable="false"
+                                    >
+                                      <path d="M4 7h16" />
+                                      <path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7" />
+                                      <path d="M6.5 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7" />
+                                      <path d="M10 11v5.5M14 11v5.5" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                <div
+                                  id={`scanner-entry-body-${draft.transactionId}`}
+                                  className="scanner-entry-body"
+                                  hidden={!expanded}
+                                >
+                          <div className="scanner-entry-field">
+                            <span className="scanner-field-name" aria-hidden="true">Description</span>
                             <input
+                              id={`scanner-description-${draft.transactionId}`}
                               className="input scanner-edit-input"
                               value={draft.description}
                               disabled={saveLocked}
-                              aria-label="Description"
+                              aria-label={`Description for entry ${entryNumber}`}
+                              aria-invalid={descriptionErrors.length > 0}
+                              aria-describedby={descriptionErrors.length > 0 ? `scanner-description-error-${draft.transactionId}` : undefined}
                               onChange={(event) => updateDraft(draft.transactionId, { description: event.target.value })}
+                              onBlur={() => markFieldTouched(draft.transactionId, "description")}
                             />
-                          </td>
-                          <td data-label="Type">
+                            {descriptionErrors.length > 0 && (
+                              <ul className="scanner-entry-errors" id={`scanner-description-error-${draft.transactionId}`}>
+                                {descriptionErrors.map((message) => <li key={message}>{message}</li>)}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="scanner-entry-field">
+                            <span className="scanner-field-name" aria-hidden="true">Type</span>
                             <select
+                              id={`scanner-type-${draft.transactionId}`}
                               className="input scanner-edit-input"
                               value={draft.type}
                               disabled={saveLocked || reviewRecordType === "salaries"}
-                              aria-label="Income or expense"
+                              aria-label={`Transaction type for entry ${entryNumber}`}
+                              aria-invalid={typeErrors.length > 0}
+                              aria-describedby={typeErrors.length > 0 ? `scanner-type-error-${draft.transactionId}` : undefined}
                               onChange={(event) => updateDraft(draft.transactionId, { type: event.target.value as ScannerEntryType })}
+                              onBlur={() => markFieldTouched(draft.transactionId, "type")}
                             >
                               <option value="">Choose…</option>
                               <option value="income">{reviewRecordType === "sales" ? "Sales (Income)" : "Income"}</option>
                               <option value="expense">Expense</option>
                             </select>
-                          </td>
-                          <td data-label="Amount">
+                            {typeErrors.length > 0 && (
+                              <ul className="scanner-entry-errors" id={`scanner-type-error-${draft.transactionId}`}>
+                                {typeErrors.map((message) => <li key={message}>{message}</li>)}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="scanner-entry-field">
+                            <span className="scanner-field-name" aria-hidden="true">Amount ({expectedCurrency})</span>
                             <input
+                              id={`scanner-amount-${draft.transactionId}`}
                               className="input scanner-edit-input"
                               value={draft.amountText}
                               disabled={saveLocked}
                               inputMode="decimal"
-                              aria-label={`Amount in ${expectedCurrency}`}
+                              aria-label={`Amount in ${expectedCurrency} for entry ${entryNumber}`}
+                              aria-invalid={amountErrors.length > 0}
+                              aria-describedby={amountErrors.length > 0 ? `scanner-amount-error-${draft.transactionId}` : undefined}
                               onChange={(event) => updateDraft(draft.transactionId, { amountText: event.target.value })}
+                              onBlur={() => markFieldTouched(draft.transactionId, "amount")}
                             />
+                            {amountErrors.length > 0 && (
+                              <ul className="scanner-entry-errors" id={`scanner-amount-error-${draft.transactionId}`}>
+                                {amountErrors.map((message) => <li key={message}>{message}</li>)}
+                              </ul>
+                            )}
                             {draft.quantityText && draft.unitPriceMinor !== null && (
                               <span className="field-hint">
                                 Scan read: {draft.quantityText} × {formatMoney(draft.unitPriceMinor, expectedCurrency)}
@@ -1500,34 +1817,49 @@ export default function ScannerPage() {
                             {draft.currencyConflict && draft.currencyDetected && (
                               <span className="field-hint">Image shows {draft.currencyDetected}; saving currency stays {expectedCurrency}.</span>
                             )}
-                          </td>
-                          <td data-label="Date">
+                          </div>
+                          <div className="scanner-entry-field">
+                            <span className="scanner-field-name" aria-hidden="true">Date</span>
                             <ScannerDateEditor
                               draft={draft}
+                              entryNumber={entryNumber}
                               dateFormat={dateFormat}
                               disabled={saveLocked}
                               onCommit={commitDraftDate}
                               onCalendarSelection={commitCalendarDate}
                               onEditingChange={handleDateEditingChange}
+                              onFieldBlur={(transactionId) => markFieldTouched(transactionId, "date")}
+                              fieldErrorId={dateErrors.length > 0 ? `scanner-date-field-error-${draft.transactionId}` : null}
                             />
                             {draft.dateHint && <span className="field-hint">Scan read: {draft.dateHint}</span>}
-                          </td>
-                          <td data-label="Category">
+                            {dateErrors.length > 0 && (
+                              <ul className="scanner-entry-errors" id={`scanner-date-field-error-${draft.transactionId}`}>
+                                {dateErrors.map((message) => <li key={message}>{message}</li>)}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="scanner-entry-field">
+                            <span className="scanner-field-name" aria-hidden="true">Category</span>
                             <input
+                              id={`scanner-category-${draft.transactionId}`}
                               className="input scanner-edit-input"
                               value={draft.category}
                               disabled={saveLocked}
-                              aria-label="Category"
+                              aria-label={`Category for entry ${entryNumber}`}
                               onChange={(event) => updateDraft(draft.transactionId, { category: event.target.value })}
+                              onBlur={() => markFieldTouched(draft.transactionId, "category")}
                             />
-                          </td>
-                          <td data-label="Review">
+                          </div>
+                          <div className="scanner-entry-field scanner-entry-review">
+                            <span className="scanner-field-name" aria-hidden="true">Review</span>
                             {requiresExplicitConfirmation(draft) ? (
                               <label className="scanner-confirm-check">
                                 <input
+                                  id={`scanner-confirm-${draft.transactionId}`}
                                   type="checkbox"
                                   checked={draft.explicitlyConfirmed}
                                   disabled={saveLocked}
+                                  aria-label={`I checked entry ${entryNumber}`}
                                   onChange={(event) => updateDraft(draft.transactionId, { explicitlyConfirmed: event.target.checked })}
                                 />
                                 I checked this entry
@@ -1538,49 +1870,19 @@ export default function ScannerPage() {
                             {warnings.map((warning) => (
                               <span key={warning} className="scanner-review-warnings">{warning}</span>
                             ))}
-                            {showErrors && (
+                            {reviewErrors.length > 0 && (
                               <ul className="scanner-entry-errors">
-                                {errors.map((message) => <li key={message}>{message}</li>)}
+                                {reviewErrors.map((message) => <li key={message}>{message}</li>)}
                               </ul>
                             )}
-                          </td>
-                          <td data-label="Remove">
-                            <button
-                              className="scanner-remove-btn"
-                              type="button"
-                              disabled={saveLocked}
-                              aria-label={`Remove entry ${index + 1}${draft.description.trim() ? `: ${draft.description.trim()}` : ""}`}
-                              title="Remove this entry"
-                              data-scanner-remove={draft.transactionId}
-                              onClick={() => requestRemoveDraft(draft.transactionId)}
-                            >
-                              <svg
-                                viewBox="0 0 24 24"
-                                width="17"
-                                height="17"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                aria-hidden="true"
-                                focusable="false"
-                              >
-                                <path d="M4 7h16" />
-                                <path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7" />
-                                <path d="M6.5 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7" />
-                                <path d="M10 11v5.5M14 11v5.5" />
-                              </svg>
-                            </button>
-                          </td>
-                              </tr>
+                          </div>
+                                </div>
+                              </article>
                             );
                           })}
                         </Fragment>
                       );
                     })}
-                  </tbody>
-                </table>
               </div>
               <dl className="scanner-totals">
                 <div><dt>Income</dt><dd>{formatMoney(draftTotals.incomeMinor, expectedCurrency)}</dd></div>
@@ -1683,6 +1985,34 @@ export default function ScannerPage() {
                   </div>
                 </dialog>
               )}
+              {saveAttempted && invalidDraftCount > 0 && (
+                <div
+                  ref={errorSummaryRef}
+                  tabIndex={-1}
+                  className="scanner-error-summary"
+                  role="alert"
+                  aria-labelledby="scanner-error-summary-heading"
+                >
+                  <h3 id="scanner-error-summary-heading">
+                    Fix {invalidDraftCount} {invalidDraftCount === 1 ? "entry" : "entries"} before saving
+                  </h3>
+                  <ul>
+                    {invalidDrafts.map((draft) => (
+                      <li key={draft.transactionId}>
+                        <strong>Entry {drafts.indexOf(draft) + 1}:</strong>{" "}
+                        {(draftErrors.get(draft.transactionId) ?? []).join(" ")}{" "}
+                        <button
+                          className="btn ghost small"
+                          type="button"
+                          onClick={() => focusFirstInvalidField(draft)}
+                        >
+                          Go to entry {drafts.indexOf(draft) + 1}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {saveError && <p className="alert-error" role="alert">{saveError}</p>}
               {saveOutcome ? (
                 <div className="notice" role="status">
@@ -1700,17 +2030,30 @@ export default function ScannerPage() {
                   </div>
                 </div>
               ) : confirmingSave ? (
-                <div className="scanner-confirm-panel">
-                  <h3>Confirm final save</h3>
-                  <p>
+                <div
+                  ref={saveConfirmPanelRef}
+                  tabIndex={-1}
+                  className="scanner-confirm-panel"
+                  role="alertdialog"
+                  aria-labelledby="scanner-save-confirm-heading"
+                  aria-describedby="scanner-save-confirm-detail scanner-save-confirm-warning"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && !saving) {
+                      event.preventDefault();
+                      setConfirmingSave(false);
+                    }
+                  }}
+                >
+                  <h3 id="scanner-save-confirm-heading">Confirm final save</h3>
+                  <p id="scanner-save-confirm-detail">
                     Save {drafts.length} {drafts.length === 1 ? "entry" : "entries"} to{" "}
                     {activeProfile?.name}
                     {activeBucket ? `, bucket “${activeBucket.name}”` : ""}, in {expectedCurrency}.
                     This saves the whole batch at once, or nothing at all.
                   </p>
-                  <p className="scanner-warning" role="note">
-                    Scanner-confirmed records cannot currently be edited or
-                    deleted through the existing history pages.
+                  <p className="scanner-warning" role="note" id="scanner-save-confirm-warning">
+                    If you spot a mistake later, each saved record can be
+                    corrected or deleted from the history pages.
                   </p>
                   <div className="row-actions">
                     <button className="btn" type="button" disabled={saving} onClick={() => void confirmSave()}>
@@ -1723,12 +2066,9 @@ export default function ScannerPage() {
                 </div>
               ) : (
                 <div className="row-actions">
-                  <button className="btn" type="button" disabled={saving || drafts.length === 0} onClick={requestSaveConfirmation}>
+                  <button ref={reviewSaveButtonRef} className="btn" type="button" disabled={saving || drafts.length === 0} onClick={requestSaveConfirmation}>
                     Review final save
                   </button>
-                  {saveAttempted && invalidDraftCount > 0 && (
-                    <span className="field-hint">Fix {invalidDraftCount} entries or remove them to continue.</span>
-                  )}
                   {grandTotalReconciliation.mismatch && !grandTotalAcknowledged && (
                     <span className="field-hint">Check the written-total difference above to continue.</span>
                   )}
