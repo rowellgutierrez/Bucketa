@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
+import { bucketsRepo, createTransactionConfirmed, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, BucketKind, Profile, Transaction } from "../data/types";
 import {
   BucketaDataError,
@@ -37,7 +37,12 @@ import {
   type PlannedEntry,
   type RecordAmounts,
 } from "../lib/recordForm";
-import Bucky from "../components/Bucky";
+import BuckyMascot, { type BuckyHandle } from "../components/BuckyMascot";
+import {
+  createSavingsReactionState,
+  observeSavingsGoal,
+  planSavingsReaction,
+} from "../lib/buckySavingsEvents";
 import {
   buildTransactionCorrectionPatch,
   isCorrectableTransaction,
@@ -123,7 +128,6 @@ export default function PersonalPage() {
   const [bucketKind, setBucketKind] = useState<BucketKind>("savings");
   const [bucketCurrency, setBucketCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [bucketTarget, setBucketTarget] = useState("");
-  const [celebrateKey, setCelebrateKey] = useState(0);
   const [bucketFormError, setBucketFormError] = useState("");
   const [savingBucket, setSavingBucket] = useState(false);
 
@@ -134,6 +138,45 @@ export default function PersonalPage() {
   const [movementDate, setMovementDate] = useState(todayInputValue);
   const [movementError, setMovementError] = useState("");
   const [savingMovement, setSavingMovement] = useState(false);
+
+  // Savings Bucky (3D) reaction safety: reactions fire only for
+  // commit-confirmed movements to the displayed goal, deduplicated by
+  // transaction ID. Observing a goal (mount / goal switch) only records a
+  // baseline and never fires — see src/lib/buckySavingsEvents.ts.
+  const buckyRef = useRef<BuckyHandle | null>(null);
+  const reactionStateRef = useRef(createSavingsReactionState());
+  // User-selectable savings goal for the 3D Bucky preview. Only savings
+  // buckets with a valid goal target can be visualized. The selection is
+  // revalidated by derivation: a deleted goal or a profile change falls
+  // back to the first valid goal (or none) instead of going stale.
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const savingsGoalBuckets = buckets.filter(
+    (b) => b.kind === "savings" && bucketGoalProgress(transactions, b),
+  );
+  const displayedGoalBucket =
+    savingsGoalBuckets.find((b) => b.id === selectedGoalId) ??
+    savingsGoalBuckets[0] ??
+    null;
+  const displayedGoalProgress = displayedGoalBucket
+    ? bucketGoalProgress(transactions, displayedGoalBucket)
+    : null;
+
+  // A goal selection never carries across profiles.
+  useEffect(() => {
+    setSelectedGoalId(null);
+  }, [profileId]);
+
+  useEffect(() => {
+    if (displayedGoalBucket && displayedGoalProgress) {
+      observeSavingsGoal(
+        reactionStateRef.current,
+        displayedGoalBucket.id,
+        displayedGoalProgress.percent,
+      );
+    }
+    // Baseline only when the displayed goal itself changes — not per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayedGoalBucket?.id]);
 
   // Category management.
   const [renamingCategory, setRenamingCategory] = useState("");
@@ -428,7 +471,6 @@ export default function PersonalPage() {
         );
         setTransactions((prev) => sortTxns(prev.map((t) => (t.id === updated.id ? updated : t))));
         setNotice("Personal record updated.");
-        setCelebrateKey((k) => k + 1);
       } else {
         // One transaction per entered side, each with its own type/amount.
         const created: Transaction[] = [];
@@ -472,7 +514,6 @@ export default function PersonalPage() {
             ? "2 personal records added (income and expense)."
             : "Personal record added.",
         );
-        setCelebrateKey((k) => k + 1);
       }
       resetRecordForm(activeProfile.currency);
       setShowRecordForm(false);
@@ -605,14 +646,37 @@ export default function PersonalPage() {
         category: null, origin: "manual", relatedId: null, createdAt: stamp, updatedAt: stamp,
       };
       validateTransaction(txn);
-      await transactionsRepo.create(txn);
+      const percentBefore = bucketGoalProgress(transactions, bucket)?.percent ?? 0;
+      // Commit-confirmed save: resolves only when the IndexedDB
+      // transaction commits, so the mascot reaction below can never fire
+      // for an uncommitted or failed save.
+      await createTransactionConfirmed(txn);
+      const percentAfter =
+        bucketGoalProgress([txn, ...transactions], bucket)?.percent ?? percentBefore;
       setTransactions((prev) => sortTxns([txn, ...prev]));
       setNotice(
         movementType === "savings-deposit"
           ? `Deposited ${formatMoney(amountMinor, bucket.currency)} to “${bucket.name}”.`
           : `Withdrew ${formatMoney(amountMinor, bucket.currency)} from “${bucket.name}”.`,
       );
-      if (movementType === "savings-deposit") setCelebrateKey((k) => k + 1);
+      // Confirmed reaction for the displayed savings goal only. The
+      // planner deduplicates by transaction ID and stays silent for
+      // other goals, so nothing replays on mount or goal switches.
+      const reaction = planSavingsReaction(reactionStateRef.current, {
+        goalId: bucket.id,
+        eventId: txn.id,
+        kind: movementType === "savings-deposit" ? "deposit" : "withdrawal",
+        percentBefore,
+        percentAfter,
+      });
+      if (reaction) {
+        buckyRef.current?.handleFinancialEvent(reaction.event, {
+          confirmed: true,
+          progress: reaction.progress,
+          goalId: reaction.goalId,
+          eventId: reaction.eventId,
+        });
+      }
       setMovementBucketId("");
       setMovementAmount("");
       setMovementError("");
@@ -1119,22 +1183,41 @@ export default function PersonalPage() {
                   </button>
                 </div>
                 {(() => {
-                  const goalBucket = buckets.find(
-                    (b) => b.kind === "savings" && bucketGoalProgress(transactions, b),
-                  );
-                  const progress = goalBucket
-                    ? bucketGoalProgress(transactions, goalBucket)
-                    : null;
+                  const goalBucket = displayedGoalBucket;
+                  const progress = displayedGoalProgress;
                   return (
                     <div className="bucky-row">
-                      <Bucky
-                        variant="savings"
-                        fillPercent={progress ? progress.percent : null}
+                      {/* The only Savings 3D Bucky in the app: translucent
+                          body with internal coins, driven by the existing
+                          authoritative goal progress (decimals kept). */}
+                      <BuckyMascot
+                        ref={buckyRef}
+                        size="row"
+                        mode="savings"
+                        progress={progress ? progress.percent : null}
+                        goalId={goalBucket?.id}
                         currency={goalBucket?.currency}
-                        celebrateKey={celebrateKey}
+                        label="Bucky showing your savings goal progress"
                       />
                       <div>
                         <strong>Bucky keeps an eye on your goals</strong>
+                        {savingsGoalBuckets.length > 1 && goalBucket && (
+                          <label>
+                            <span className="muted">Goal Bucky is watching</span>
+                            <select
+                              className="input"
+                              value={goalBucket.id}
+                              onChange={(e) => setSelectedGoalId(e.target.value)}
+                              aria-label="Choose which savings goal Bucky displays"
+                            >
+                              {savingsGoalBuckets.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.name} ({b.currency})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                         {goalBucket && progress ? (
                           <p className="muted bucket-meta">
                             {goalBucket.name}: {formatMoney(progress.savedMinor, goalBucket.currency)}{" "}

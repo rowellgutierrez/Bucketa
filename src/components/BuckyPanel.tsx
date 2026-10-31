@@ -8,7 +8,7 @@ import {
   type BuckyProposal,
 } from "../lib/buckyAgent.ts";
 import { BuckyApiError, requestBuckyAdvice, type BuckyAdviceResponse } from "../lib/buckyApi.ts";
-import Bucky from "./Bucky.tsx";
+import BuckyMascot from "./BuckyMascot";
 
 interface Props {
   profiles: Profile[];
@@ -121,7 +121,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   return (
     <section className="panel bucky-panel" aria-labelledby="bucky-panel-heading">
       <div className="bucky-panel-head">
-        <Bucky variant="savings" />
+        <BuckyMascot size="panel" talking={advisorBusy} label="Bucky, your financial assistant" />
         <div>
           <h2 id="bucky-panel-heading">Bucky Agent</h2>
           <p className="muted">

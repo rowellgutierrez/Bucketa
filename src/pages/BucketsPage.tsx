@@ -26,7 +26,7 @@ import {
 } from "../lib/currency";
 import { canChangeBucketCurrency } from "../lib/recordForm";
 import { bucketGoalProgress } from "../lib/finance";
-import Bucky from "../components/Bucky";
+import BuckyMascot from "../components/BuckyMascot";
 import BusinessReport, { type BusinessReportData } from "../components/BusinessReport";
 
 
@@ -94,7 +94,6 @@ export default function BucketsPage() {
   const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [target, setTarget] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [celebrateKey, setCelebrateKey] = useState(0);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
@@ -423,7 +422,6 @@ export default function BucketsPage() {
       setShowBucketForm(false);
       setNotice(`Bucket “${bucket.name}” created.`);
       setTarget("");
-      setCelebrateKey((k) => k + 1);
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -895,7 +893,9 @@ export default function BucketsPage() {
                 const progress = goalBucket ? bucketGoalProgress(transactions, goalBucket) : null;
                 return (
                   <div className="bucky-row">
-                    <Bucky variant="savings" fillPercent={progress ? progress.percent : null} currency={goalBucket?.currency} celebrateKey={celebrateKey} />
+                    {/* Normal 3D Bucky: Savings mode with internal coins is
+                        reserved for Personal Finance savings goals only. */}
+                    <BuckyMascot size="row" label="Bucky watching this business's goals" />
                     <div>
                       <strong>Bucky keeps an eye on {activeProfile.name}&apos;s goals</strong>
                       {goalBucket && progress ? (

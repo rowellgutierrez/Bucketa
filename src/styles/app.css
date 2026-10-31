@@ -328,6 +328,16 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
 @keyframes bucky-yawn{0%,100%{transform:scale(.75)}50%{transform:scale(1.12)}}
 @keyframes bucky-float{0%,100%{transform:translateY(0);opacity:.85}50%{transform:translateY(-6px);opacity:1}}
 @media (max-width:640px){.bucky-button{width:84px;flex-basis:84px}.bucky-row .bucky-button{width:96px;flex-basis:96px}}
+/* --- Bucky 3D mascot (neutral placeholder while loading; SVG Bucky only on genuine 3D failure) --- */
+.bucky-mascot{position:relative;width:148px;height:148px;flex:0 0 auto;overflow:hidden}
+.bucky-mascot--row{width:132px;height:132px}
+.bucky-mascot--panel{width:84px;height:84px}
+/* The mascot must never be stretched by the generic .bucky-row child rule. */
+.bucky-row>.bucky-mascot{flex:0 0 auto;min-width:0}
+.bucky-mascot-loading{position:absolute;inset:0}
+.bucky-mascot-fallback{position:absolute;inset:0;overflow:hidden}
+.bucky-mascot-fallback .bucky-button{width:100%;height:100%;max-width:100%;max-height:100%}
+@media (max-width:640px){.bucky-mascot{width:112px;height:112px}.bucky-mascot--row{width:104px;height:104px}.bucky-mascot--panel{width:72px;height:72px}}
 /* --- Bucky Agent panel (deterministic insights, not AI) --- */
 .bucky-panel{display:flex;flex-direction:column;gap:16px;margin-bottom:20px}
 .bucky-panel-head{display:flex;gap:16px;align-items:center}

@@ -6,13 +6,12 @@ import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
 import { formatMoney } from "../lib/currency";
 import {
-  bucketGoalProgress,
   expenseByCategory,
   filterByDateRange,
   monthlyIncomeExpense,
   summarizeTransactions,
 } from "../lib/finance";
-import Bucky from "../components/Bucky";
+import BuckyMascot from "../components/BuckyMascot";
 
 type Status = "loading" | "ready" | "error";
 type View = "personal" | "business" | "all";
@@ -226,12 +225,9 @@ export default function DashboardPage() {
   return (
     <section className="page finance-page">
       <header className="dash-header greeting-header">
-        <Bucky
-          variant="greeting"
-          celebrateKey={
-            buckets.some((b) => (bucketGoalProgress(transactions, b)?.percent ?? 0) >= 100) ? 1 : 0
-          }
-        />
+        {/* Normal 3D Bucky greeting. Deliberately no celebration here:
+            an already-completed goal must not replay on mount/reload. */}
+        <BuckyMascot animation="Greeting" label="Bucky greeting you" />
         <div>
           <h1>{personalProfiles[0] ? `Hello, ${personalProfiles[0].name}!` : "Hello!"}</h1>
           <p className="muted dash-subtitle">

@@ -1,0 +1,12 @@
+/** Pure data controller. Percent is supplied by the application, never calculated here. */
+export class SavingsController {
+ constructor({onChange=()=>{},onComplete=()=>{},duration=.65}={}){this.onChange=onChange;this.onComplete=onComplete;this.duration=duration;this.goals=new Map([['default',{target:0,confirmedProgress:0,completed:false}]]);this.goalId='default';this.current=0;this.from=0;this.elapsed=0;this.transitions=0;}
+ static validate(value){if(typeof value!=='number'||!Number.isFinite(value)||value<0||value>100)throw new RangeError('Savings progress must be a finite number from 0 to 100.');return value;}
+ get target(){return this.goals.get(this.goalId).target;}
+ setSavingsProgress(value,{confirmed=false}={}){SavingsController.validate(value);const goal=this.goals.get(this.goalId);const newlyComplete=goal.confirmedProgress<100&&value===100&&!goal.completed;goal.target=value;this.from=this.current;this.elapsed=0;this.transitions++;if(confirmed){goal.confirmedProgress=value;if(newlyComplete){goal.completed=true;this.onComplete(this.goalId)}}this.onChange(this.snapshot());return value;}
+ setGoal(id,value){if(typeof id!=='string'||!id.trim())throw new TypeError('Goal id is required.');if(value!==undefined)SavingsController.validate(value);if(!this.goals.has(id))this.goals.set(id,{target:value??0,confirmedProgress:value??0,completed:value===100});else if(value!==undefined){const g=this.goals.get(id);g.target=value;g.confirmedProgress=value;if(value===100)g.completed=true;}this.goalId=id;this.from=this.current;this.elapsed=0;this.onChange(this.snapshot());}
+ update(dt){if(!Number.isFinite(dt)||dt<0)throw new RangeError('Delta time must be finite and nonnegative.');this.elapsed+=dt;const t=this.duration===0?1:Math.min(1,this.elapsed/this.duration),e=t*t*(3-2*t);this.current=t===1?this.target:this.from+(this.target-this.from)*e;this.onChange(this.snapshot());return this.current;}
+ snapshot(){return {goalId:this.goalId,current:this.current,target:this.target,completed:this.goals.get(this.goalId).completed};}
+}
+export const FINANCIAL_EVENTS=Object.freeze({deposit:'Wave',withdrawal:'NodYes',goalCompleted:'Celebration',income:'Emotion_Happy',expense:'NodYes',posSale:'Emotion_Happy',receiptScanning:'Thinking',scannerReview:'Listening',error:'Emotion_Reassuring',taskCompleted:'Emotion_Proud'});
+export function requiresConfirmation(event){return !['receiptScanning','scannerReview','error'].includes(event);}

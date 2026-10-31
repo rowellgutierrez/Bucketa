@@ -530,6 +530,30 @@ export function saveScannerTransactions(args: {
   );
 }
 
+/**
+ * Creates one transaction and resolves only when the IndexedDB
+ * transaction has COMMITTED (transaction.oncomplete), unlike the generic
+ * repository create() which resolves on request success. Use this when a
+ * caller must know the record is durably saved before reacting to it —
+ * e.g. firing a confirmed savings deposit/withdrawal mascot event.
+ * Rejects on transaction error or abort, when nothing was committed.
+ */
+export function createTransactionConfirmed(record: Transaction): Promise<Transaction> {
+  validateTransaction(record);
+  return openDb().then(
+    (db) =>
+      new Promise<Transaction>((resolve, reject) => {
+        const transaction = db.transaction("transactions", "readwrite");
+        transaction.oncomplete = () => resolve(record);
+        transaction.onerror = () =>
+          reject(new BucketaDataError("The record could not be saved. Nothing was saved."));
+        transaction.onabort = () =>
+          reject(new BucketaDataError("The record save was cancelled. Nothing was saved."));
+        transaction.objectStore("transactions").add(record);
+      }),
+  );
+}
+
 export const profilesRepo = createRepository<Profile>("profiles", validateProfile, { byProfile: false });
 export const bucketsRepo = createRepository<Bucket>("buckets", validateBucket);
 export const transactionsRepo = createRepository<Transaction>("transactions", validateTransaction);
