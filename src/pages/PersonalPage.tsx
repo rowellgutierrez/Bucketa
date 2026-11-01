@@ -1,4 +1,7 @@
+import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { transactionDisplay } from "../lib/transactionDisplay";
+import Icon from "../components/ui/Icon";
 import { bucketsRepo, createTransactionConfirmed, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, BucketKind, Profile, Transaction } from "../data/types";
 import {
@@ -56,15 +59,6 @@ const KIND_LABELS: Record<BucketKind, string> = {
   savings: "Savings",
   budget: "Budget",
   allocated: "Allocated",
-};
-
-const TXN_TYPE_LABELS: Record<Transaction["type"], string> = {
-  income: "Income",
-  expense: "Expense",
-  transfer: "Transfer",
-  sale: "Sale",
-  "savings-deposit": "Savings deposit",
-  "savings-withdrawal": "Savings withdrawal",
 };
 
 function errorMessage(error: unknown): string {
@@ -780,33 +774,23 @@ export default function PersonalPage() {
     id ? (buckets.find((b) => b.id === id)?.name ?? "Unknown bucket") : null;
 
   return (
-    <section className="page finance-page">
-      <header className="dash-header">
-        <div>
-          <h1>Personal Finance</h1>
-          <p className="muted dash-subtitle">
-            Record your own income and expenses, organised with savings and
-            budgets — always separate from every business.
-          </p>
-        </div>
-        {activeProfile && (
-          <button
-            className="btn"
-            type="button"
-            aria-expanded={showRecordForm}
-            onClick={() => {
-              if (!showRecordForm) resetRecordForm(activeProfile.currency);
-              setShowRecordForm((v) => !v);
-            }}
-          >
-            {showRecordForm ? "Close" : "Add income or expense"}
-          </button>
-        )}
-      </header>
+    <section className="page finance-page personal-page">
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="TRACK MONEY"
+        title="Personal Finance"
+        description="Your income, expenses, and savings — separate from your business."
+        actions={activeProfile ? (
+          <button className="btn" type="button" aria-expanded={showRecordForm} onClick={() => {
+            if (!showRecordForm) resetRecordForm(activeProfile.currency);
+            setShowRecordForm((v) => !v);
+          }}>{showRecordForm ? "Close" : "Add record"}</button>
+        ) : undefined}
+      />
 
-      {status === "loading" && <div className="card" role="status">Loading personal finance…</div>}
+      {status === "loading" && <div className="card loading-state" role="status">Loading personal finance…</div>}
       {status === "error" && (
-        <div className="card">
+        <div className="card feedback-error">
           <p className="alert-error" role="alert">Could not load personal finance: {loadError}</p>
           <button className="btn" type="button" onClick={() => void load(profileId)}>Retry</button>
         </div>
@@ -845,14 +829,12 @@ export default function PersonalPage() {
           )}
 
           {showProfileForm && (
-            <form className="card inline-form" onSubmit={onCreateProfile} noValidate>
+            <form className="card inline-form profile-setup-form" onSubmit={onCreateProfile} noValidate>
               <h2 className="inline-form-title">
                 {profiles.length === 0 ? "Create your personal profile" : "Create a personal profile"}
               </h2>
               <p className="muted">
-                Personal records live under this profile only and are never mixed
-                with business buckets or transactions. Bucketa starts from the
-                records you enter — it does not assume any opening balance.
+                Personal and business records stay separate. Summaries start with your saved entries; no opening balance is assumed.
               </p>
               <div className="form-row">
                 <div className="field">
@@ -905,9 +887,8 @@ export default function PersonalPage() {
           {notice && <p className="notice dash-alert" role="status">{notice}</p>}
 
           {!activeProfile ? (
-            <div className="card empty-state">
-              <p>No personal profile yet.</p>
-              <p className="muted">Create one above to start tracking personal income and expenses.</p>
+            <div className="empty-state setup-note">
+              <p className="muted">Your records are saved in this browser.</p>
             </div>
           ) : (
             <>
@@ -1671,13 +1652,15 @@ export default function PersonalPage() {
                   <ul className="txn-list">
                     {filteredTransactions.map((txn) => {
                       const editable = isCorrectableTransaction(txn);
+                      const display = transactionDisplay(txn.type);
                       const assigned = bucketSelectName(txn.bucketId);
                       return (
-                        <li key={txn.id} className="txn-row">
+                        <li key={txn.id} className="txn-row" data-kind={txn.type}>
+                          <span className="record-icon"><Icon name={display.icon} /></span>
                           <div className="txn-main">
                             <strong>{txn.description}</strong>
                             <p className="muted bucket-meta">
-                              {formatDate(txn.date)} · {TXN_TYPE_LABELS[txn.type]}
+                              {formatDate(txn.date)} · <span className="txn-type" title={display.context}>{display.label}</span>
                               {txn.category ? ` · ${txn.category}` : ""}
                               {assigned ? ` · ${assigned}` : ""}
                               {txn.origin === "scanner-confirmed"
@@ -1687,16 +1670,12 @@ export default function PersonalPage() {
                                   : ""}
                             </p>
                           </div>
-                          <span
-                            className={
-                              txn.type === "expense" || txn.type === "savings-withdrawal"
-                                ? "txn-amount amount-out"
-                                : "txn-amount amount-in"
-                            }
-                          >
-                            {txn.type === "expense" || txn.type === "savings-withdrawal" ? "−" : "+"}
-                            {formatMoney(txn.amountMinor, txn.currency)}
-                          </span>
+                          <div className="txn-value">
+                            <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
+                              {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
+                            </span>
+                            <span className="txn-direction">{display.context}</span>
+                          </div>
                           {editable ? (
                             <div className="row-actions txn-actions">
                               <button className="btn ghost small" type="button" onClick={() => startEditTxn(txn)}>

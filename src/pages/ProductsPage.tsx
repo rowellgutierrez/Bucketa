@@ -1,3 +1,5 @@
+import Icon from "../components/ui/Icon";
+import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { productsRepo, profilesRepo } from "../data/db";
 import type { Product, Profile } from "../data/types";
@@ -301,24 +303,18 @@ export default function ProductsPage() {
   }
 
   return (
-    <section className="page finance-page">
-      <header className="dash-header">
-        <div>
-          <h1>Products and Inventory</h1>
-          <p className="muted dash-subtitle">
-            What each business sells, its prices, and how many are on hand.
-          </p>
-        </div>
-        {activeProfile && (
-          <button className="btn" type="button" onClick={startCreate}>
-            Add product
-          </button>
-        )}
-      </header>
+    <section className="page finance-page inventory-page">
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="BUSINESS TOOLS"
+        title="Products & Inventory"
+        description="Manage your catalog, prices, and available stock."
+        actions={activeProfile ? <button className="btn" type="button" onClick={startCreate}>Add product</button> : undefined}
+      />
 
-      {status === "loading" && <div className="card" role="status">Loading products…</div>}
+      {status === "loading" && <div className="card loading-state" role="status">Loading products…</div>}
       {status === "error" && (
-        <div className="card">
+        <div className="card feedback-error">
           <p className="alert-error" role="alert">Could not load products: {loadError}</p>
           <button className="btn" type="button" onClick={() => void load(profileId)}>Retry</button>
         </div>
@@ -328,10 +324,10 @@ export default function ProductsPage() {
         <>
           {profiles.length === 0 ? (
             <div className="card empty-state">
-              <p>No business yet.</p>
+              <span className="metric-icon"><Icon name="products" /></span><h2>Your inventory starts here</h2>
               <p className="muted">
-                Products belong to a business. Create one first under{" "}
-                <a href="#/buckets">Business Buckets</a>, then come back here.
+                Create a business in{" "}
+                <a href="#/buckets">Buckets</a>, then add your products and opening stock.
               </p>
             </div>
           ) : (
@@ -560,19 +556,19 @@ export default function ProductsPage() {
                           key={product.id}
                           className={isArchived(product) ? "bucket-row wrap-row product-archived" : "bucket-row wrap-row"}
                         >
-                          <div>
+                          <div className="inventory-product-main">
                             <strong>{product.name}</strong>
                             <p className="muted bucket-meta">
-                              {product.category ? `${product.category} · ` : ""}
-                              {product.sku ? `SKU ${product.sku} · ` : ""}
-                              {formatMoney(product.priceMinor, product.currency)}
-                              {product.costMinor !== null
-                                ? ` · cost ${formatMoney(product.costMinor, product.currency)}`
-                                : ""}
-                              {isArchived(product) ? " · Archived" : ""}
+                              {[product.category, product.sku ? `SKU ${product.sku}` : null,
+                                product.costMinor !== null ? `Cost ${formatMoney(product.costMinor, product.currency)}` : null,
+                                isArchived(product) ? "Archived" : null].filter(Boolean).join(" · ")}
                             </p>
                           </div>
-                          <span className={product.stock === 0 ? "amount-out" : ""}>
+                          <div className="inventory-product-price">
+                            <strong>{formatMoney(product.priceMinor, product.currency)}</strong>
+                            <span>Sale price</span>
+                          </div>
+                          <span className={product.stock === 0 ? "stock-status stock-empty" : "stock-status"}>
                             {product.stock === 0 ? "Out of stock" : `${product.stock} in stock`}
                           </span>
                           <div className="row-actions">

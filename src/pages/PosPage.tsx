@@ -1,3 +1,5 @@
+import Icon from "../components/ui/Icon";
+import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { completeSale, productsRepo, profilesRepo, salesRepo } from "../data/db";
 import type { Product, Profile, Sale } from "../data/types";
@@ -224,19 +226,17 @@ export default function PosPage() {
   }
 
   return (
-    <section className="page finance-page">
-      <header className="dash-header">
-        <div>
-          <h1>Sales / POS</h1>
-          <p className="muted dash-subtitle">
-            Tap products to build a sale. Stock updates automatically when a sale is completed.
-          </p>
-        </div>
-      </header>
+    <section className="page finance-page pos-page">
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="BUSINESS TOOLS"
+        title="Sales & POS"
+        description="Build a sale, review the total, and confirm checkout. Stock updates when the sale completes."
+      />
 
-      {status === "loading" && <div className="card" role="status">Loading point of sale…</div>}
+      {status === "loading" && <div className="card loading-state" role="status">Loading point of sale…</div>}
       {status === "error" && (
-        <div className="card">
+        <div className="card feedback-error">
           <p className="alert-error" role="alert">Could not load POS: {loadError}</p>
           <button className="btn" type="button" onClick={() => void load(profileId)}>Retry</button>
         </div>
@@ -246,10 +246,10 @@ export default function PosPage() {
         <>
           {profiles.length === 0 ? (
             <div className="card empty-state">
-              <p>No business yet.</p>
+              <span className="metric-icon"><Icon name="pos" /></span><h2>Get ready for your first sale</h2>
               <p className="muted">
-                Sales belong to a business. Create one first under{" "}
-                <a href="#/buckets">Business Buckets</a>, add products, then come back here.
+                Create a business in{" "}
+                <a href="#/buckets">Buckets</a> and add products to your inventory. Your catalog will appear here.
               </p>
             </div>
           ) : (

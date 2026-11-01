@@ -11,13 +11,16 @@ import {
   monthlyIncomeExpense,
   summarizeTransactions,
 } from "../lib/finance";
-import BuckyMascot from "../components/BuckyMascot";
+import Card, { MetricCard } from "../components/ui/Card";
+import PageHeader from "../components/ui/PageHeader";
+import Icon from "../components/ui/Icon";
+import { historyHref } from "../lib/historyScope";
+import { transactionDisplay } from "../lib/transactionDisplay";
 
 type Status = "loading" | "ready" | "error";
 type View = "personal" | "business" | "all";
 type RangePreset = "all" | "month" | "lastMonth" | "days30" | "custom";
 
-const PIE_COLORS = ["#014184", "#2563EB", "#0E9F6E", "#38BDF8", "#D97706", "#486581", "#7FB3E8", "#5BC8AF"];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
@@ -58,26 +61,6 @@ function rangeFor(preset: RangePreset, customFrom: string, customTo: string): { 
   }
   if (preset === "custom") return { from: customFrom, to: customTo };
   return { from: "", to: "" };
-}
-
-function pieSlices(data: { category: string; total: number }[]) {
-  const total = data.reduce((sum, d) => sum + d.total, 0);
-  let angle = -90;
-  return data.map((d, i) => {
-    const sweep = total > 0 ? (d.total / total) * 360 : 0;
-    const start = angle;
-    angle += sweep;
-    const large = sweep > 180 ? 1 : 0;
-    const p = (deg: number) => {
-      const rad = (deg * Math.PI) / 180;
-      return `${50 + 50 * Math.cos(rad)},${50 + 50 * Math.sin(rad)}`;
-    };
-    const path =
-      sweep >= 359.999
-        ? "M50,50 m-50,0 a50,50 0 1,0 100,0 a50,50 0 1,0 -100,0"
-        : `M50,50 L${p(start)} A50,50 0 ${large} 1 ${p(angle)} Z`;
-    return { ...d, path, color: PIE_COLORS[i % PIE_COLORS.length], pct: total > 0 ? (d.total / total) * 100 : 0 };
-  });
 }
 
 export default function DashboardPage() {
@@ -135,6 +118,7 @@ export default function DashboardPage() {
   }, [view, businessId, profiles]);
 
   const range = rangeFor(preset, customFrom, customTo);
+  const fullHistoryHref = historyHref({ scope: view, profileId: businessId, from: range.from, to: range.to });
   const scoped = useMemo(
     () =>
       filterByDateRange(
@@ -159,13 +143,16 @@ export default function DashboardPage() {
     () => (activeCurrency ? expenseByCategory(scoped, activeCurrency) : []),
     [scoped, activeCurrency],
   );
-  const slices = useMemo(() => pieSlices(categories), [categories]);
+  const slices = useMemo(() => {
+    const total = categories.reduce((sum, item) => sum + item.total, 0);
+    return categories.map((item) => ({ ...item, pct: total > 0 ? item.total / total * 100 : 0 }));
+  }, [categories]);
   const maxMonthly = Math.max(1, ...monthly.flatMap((m) => [m.income, m.expense]));
   const recent = useMemo(
     () =>
       [...scoped]
         .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
-        .slice(0, 8),
+        .slice(0, 3),
     [scoped],
   );
 
@@ -223,66 +210,17 @@ export default function DashboardPage() {
   }
 
   return (
-    <section className="page finance-page">
-      <header className="dash-header greeting-header">
-        {/* Normal 3D Bucky greeting. Deliberately no celebration here:
-            an already-completed goal must not replay on mount/reload. */}
-        <BuckyMascot animation="Greeting" label="Bucky greeting you" />
-        <div>
-          <h1>{personalProfiles[0] ? `Hello, ${personalProfiles[0].name}!` : "Hello!"}</h1>
-          <p className="muted dash-subtitle">
-            Bucketa tracks the income and expenses you record — personal and
-            business separately, and each currency separately.
-          </p>
-        </div>
-      </header>
-
-      {status === "loading" && <div className="card" role="status">Loading dashboard…</div>}
-      {status === "error" && (
-        <div className="card">
-          <p className="alert-error" role="alert">Could not load dashboard: {loadError}</p>
-          <button className="btn" type="button" onClick={() => void load()}>Retry</button>
-        </div>
-      )}
-
-      {status === "ready" && (
-        <>
-          {!hasAnyTransactions ? (
-            <GettingStarted
-              title="Welcome to Bucketa"
-              intro="Start with whichever applies to you. You can do these in any order, and this guidance updates as you add profiles, buckets, and records."
-              steps={startSteps}
-            />
-          ) : (
-            startSteps.length > 0 && (
-              <GettingStarted
-                collapsed
-                title="Getting started — next steps"
-                intro="Only steps you have not done yet are listed."
-                steps={startSteps}
-              />
-            )
-          )}
-
-          <BuckyPanel
-            profiles={profiles}
-            buckets={buckets}
-            transactions={transactions}
-            products={products}
-            sales={sales}
-            preferredProfileId={
-              view === "business"
-                ? businessId
-                : view === "personal"
-                  ? personalProfiles[0]?.id
-                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
-            }
-          />
-
-          {hasAnyTransactions && (
+    <section className="page finance-page premium-dashboard home-page">
+      <PageHeader className="home-header"
+        title={personalProfiles[0] ? `Hello, ${personalProfiles[0].name}.` : "Welcome to Bucketa"}
+        description="Smart Buckets — Everything in one bucket."
+      />
+      {status === "loading" && <Card className="loading-state" role="status">Loading Home…</Card>}
+      {status === "error" && <Card className="feedback-error"><p className="alert-error" role="alert">Could not load Home: {loadError}</p><button className="btn" type="button" onClick={() => void load()}>Retry</button></Card>}
+      {status === "ready" && <>
           <div className="selector-bar dash-controls">
             <div className="selector-main">
-              <span className="type-toggle" role="group" aria-label="Dashboard view">
+              <span className="type-toggle" role="group" aria-label="Home view">
                 {(["personal", "business", "all"] as View[]).map((v) => (
                   <button
                     key={v}
@@ -348,168 +286,103 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-          )}
+      {hasAnyTransactions && scoped.length > 0 && <>
+        {summaries.map((s) => <section key={s.currency} className="dashboard-metrics" aria-label={`Summary in ${s.currency}`}>
+          <MetricCard icon="income" label="Income" value={formatMoney(s.income, s.currency)} detail="Recorded income · selected dates" />
+          <MetricCard icon="expenses" label="Expenses" value={formatMoney(s.expense, s.currency)} detail="Recorded expenses · selected dates" />
+          <MetricCard icon="personal" label="Net cash flow" value={formatMoney(s.net, s.currency)} detail="Income minus expenses · not profit" />
+          <MetricCard icon="transactions" label="Records" value={scoped.filter((t) => t.currency === s.currency).length} detail={`Saved records in ${s.currency}`} />
+        </section>)}
+        {summaries.length > 0 && <p className="muted dashboard-accounting-note">Net cash flow reflects recorded income minus expenses. It is not a bank balance or profit. Currencies are never combined.</p>}
+      </>}
+      {hasAnyTransactions && startSteps.length > 0 && (
+        <GettingStarted collapsed title="Your next steps" intro="Only steps you have not done yet are listed." steps={startSteps} />
+      )}
 
-          {!hasAnyTransactions ? null : scoped.length === 0 ? (
-            <div className="card empty-state">
-              <p>No records in this view for the selected dates.</p>
-              <p className="muted">
-                Records in other views or dates are not mixed in. Showing
-                everything usually finds them.
-              </p>
-              <div className="row-actions">
-                <button
-                  className="btn ghost small"
-                  type="button"
-                  onClick={() => {
-                    setView("all");
-                    setPreset("all");
-                  }}
-                >
-                  Show all records
-                </button>
-              </div>
+      <div className={hasAnyTransactions ? "dashboard-workspace home-layout" : "dashboard-workspace home-layout dashboard-workspace--empty"}>
+        <div className="dashboard-main">
+          {!hasAnyTransactions && <GettingStarted collapsed title="Build your financial picture" intro="Start with your personal money or a business. Your summaries will appear as you save real records." steps={startSteps} />}
+          {hasAnyTransactions && scoped.length === 0 && <Card className="empty-state"><h2>No records in this view</h2><p className="muted">Try another profile or date range. Other records are kept separate.</p><button className="btn ghost" type="button" onClick={() => { setView("all"); setPreset("all"); }}>Show all records</button></Card>}
+          {scoped.length > 0 && summaries.length === 0 && <Card className="overview-note"><h2>No income or expenses in this selection</h2><p className="muted">Savings movements, transfers, and sales appear in activity, separate from income and expense summaries.</p></Card>}
+          {summaries.length > 0 && <>
+            <div className="selector-main chart-currency-row"><span className="muted">Charts currency</span><span className="type-toggle" role="group" aria-label="Chart currency">{summaries.map((s) => <button key={s.currency} type="button" className={activeCurrency === s.currency ? "type-option on" : "type-option"} aria-pressed={activeCurrency === s.currency} onClick={() => setChartCurrency(s.currency)}>{s.currency}</button>)}</span></div>
+            <Card className="dashboard-monthly" aria-labelledby="monthly-heading">
+              <div className="panel-head"><h2 id="monthly-heading">Income vs Expenses</h2><span className="count-badge">{activeCurrency}</span></div>
+              <p className="chart-legend muted"><span className="legend-swatch swatch-in" /> Income <span className="legend-swatch swatch-out" /> Expenses</p>
+              {monthly.length === 0 ? <p className="muted">No income or expenses for the selected dates.</p> : <>
+                <div className="chart-scroll" tabIndex={0} role="region" aria-label="Scrollable monthly chart"><div className="bar-chart" role="img" aria-label={`Monthly income and expenses in ${activeCurrency}; exact values below`}>
+                  {monthly.map((m) => <div key={m.month} className="bar-group"><div className="bars"><div className="bar bar-in" style={{ height: `${Math.max(0, (m.income / maxMonthly) * 100)}%` }} title={`Income ${formatMoney(m.income, activeCurrency)}`} /><div className="bar bar-out" style={{ height: `${Math.max(0, (m.expense / maxMonthly) * 100)}%` }} title={`Expenses ${formatMoney(m.expense, activeCurrency)}`} /></div><span className="bar-label">{monthLabel(m.month)}</span></div>)}
+                </div></div>
+                <details className="chart-data"><summary>View exact monthly values</summary><ul className="chart-values">{monthly.map((m) => <li key={m.month}>{monthLabel(m.month)}: {formatMoney(m.income, activeCurrency)} income · {formatMoney(m.expense, activeCurrency)} expenses</li>)}</ul></details>
+              </>}
+            </Card>
+            <Card className="dashboard-breakdown" aria-labelledby="category-heading"><div className="panel-head"><h2 id="category-heading">Expense Breakdown</h2><span className="count-badge">{activeCurrency}</span></div>
+              {categories.length === 0 ? <p className="muted">No expenses in this currency for the selected dates.</p> : <ul className="expense-breakdown">{slices.map((s, i) => <li key={s.category}><div><strong>{s.category}</strong><span>{s.pct.toFixed(1)}%</span></div><div className="expense-track" aria-hidden="true"><span style={{ width: `${s.pct}%`, background: i % 2 ? "var(--bk-chart-secondary)" : "var(--bk-blue-600)" }} /></div><p>{formatMoney(s.total, activeCurrency)}</p></li>)}</ul>}
+            </Card>
+          </>}
+
+          <section className="home-explore" aria-labelledby="explore-heading">
+            <h2 id="explore-heading">Explore Bucketa</h2>
+            <div className="home-shortcuts">
+              <a href="#/products"><span className="metric-icon"><Icon name="products" /></span><span>Products &amp; Inventory</span><Icon name="chevron" /></a>
+              <a href="#/pos"><span className="metric-icon"><Icon name="pos" /></span><span>POS / Sales</span><Icon name="chevron" /></a>
+              <a href="#/employees"><span className="metric-icon"><Icon name="employees" /></span><span>Employees <small className="count-badge">Planned</small></span><Icon name="chevron" /></a>
+              <a href="#/scanner"><span className="metric-icon"><Icon name="scanner" /></span><span>Bucky Record Scanner</span><Icon name="chevron" /></a>
             </div>
-          ) : (
-            <>
-              {summaries.length > 0 ? (
-                <section className="txn-summaries" aria-label="Summaries by currency">
-                  {summaries.map((s) => (
-                    <div key={s.currency} className="txn-summary">
-                      <h2>{s.currency}</h2>
-                      <dl>
-                        <div><dt>Income</dt><dd className="amount-in">{formatMoney(s.income, s.currency)}</dd></div>
-                        <div><dt>Expenses</dt><dd className="amount-out">{formatMoney(s.expense, s.currency)}</dd></div>
-                        <div><dt>Net cash flow</dt><dd className={s.net < 0 ? "amount-out" : "amount-in"}>{formatMoney(s.net, s.currency)}</dd></div>
-                      </dl>
-                    </div>
-                  ))}
-                  <p className="muted txn-summary-note">
-                    Net cash flow is recorded income minus recorded expenses for
-                    the selected records. It is not a bank or account balance —
-                    Bucketa only knows amounts you record here, including any
-                    opening amount you choose to record as income.
-                  </p>
-                </section>
-              ) : (
-                <div className="card empty-state">
-                  <p>No income or expense records in this selection.</p>
-                  <p className="muted">Transfers and sales are listed under Recent but are not included in income/expense summaries.</p>
-                </div>
-              )}
-
-              {summaries.length > 0 && (
-                <>
-                  <div className="selector-main chart-currency-row">
-                    <span className="muted">Charts currency</span>
-                    <span className="type-toggle" role="group" aria-label="Chart currency">
-                      {summaries.map((s) => (
-                        <button
-                          key={s.currency}
-                          type="button"
-                          className={activeCurrency === s.currency ? "type-option on" : "type-option"}
-                          aria-pressed={activeCurrency === s.currency}
-                          onClick={() => setChartCurrency(s.currency)}
-                        >
-                          {s.currency}
-                        </button>
-                      ))}
-                    </span>
-                  </div>
-
-                  <div className="chart-grid">
-                    <section className="panel chart-panel" aria-labelledby="monthly-heading">
-                      <h2 id="monthly-heading">Income vs expenses by month</h2>
-                      {monthly.length === 0 ? (
-                        <p className="muted">No income or expenses in {activeCurrency} for the selected dates.</p>
-                      ) : (
-                        <>
-                          <div className="bar-chart" role="img" aria-label={`Monthly income and expenses in ${activeCurrency}`}>
-                            {monthly.map((m) => (
-                              <div key={m.month} className="bar-group">
-                                <div className="bars">
-                                  <div className="bar bar-in" style={{ height: `${Math.max(2, (m.income / maxMonthly) * 100)}%` }} title={`Income ${formatMoney(m.income, activeCurrency)}`} />
-                                  <div className="bar bar-out" style={{ height: `${Math.max(2, (m.expense / maxMonthly) * 100)}%` }} title={`Expenses ${formatMoney(m.expense, activeCurrency)}`} />
-                                </div>
-                                <span className="bar-label">{monthLabel(m.month)}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <p className="chart-legend muted">
-                            <span className="legend-swatch swatch-in" /> Income
-                            <span className="legend-swatch swatch-out" /> Expenses
-                          </p>
-                          <ul className="chart-values">
-                            {monthly.map((m) => (
-                              <li key={m.month}>
-                                {monthLabel(m.month)}: {formatMoney(m.income, activeCurrency)} in ·{" "}
-                                {formatMoney(m.expense, activeCurrency)} out
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                    </section>
-
-                    <section className="panel chart-panel" aria-labelledby="category-heading">
-                      <h2 id="category-heading">Expenses by category</h2>
-                      {categories.length === 0 ? (
-                        <p className="muted">
-                          No expenses in {activeCurrency} for the selected dates, so
-                          there is nothing to chart. Add an expense and it will
-                          appear here by category.
-                        </p>
-                      ) : (
-                        <div className="pie-wrap">
-                          <svg className="pie" viewBox="0 0 100 100" role="img" aria-label={`Expense categories in ${activeCurrency}`}>
-                            {slices.map((s) => (
-                              <path key={s.category} d={s.path} fill={s.color}>
-                                <title>{`${s.category}: ${formatMoney(s.total, activeCurrency)} (${s.pct.toFixed(1)}%)`}</title>
-                              </path>
-                            ))}
-                          </svg>
-                          <ul className="pie-legend">
-                            {slices.map((s) => (
-                              <li key={s.category}>
-                                <span className="legend-swatch" style={{ background: s.color }} />
-                                {s.category} — {formatMoney(s.total, activeCurrency)} ({s.pct.toFixed(1)}%)
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </section>
-                  </div>
-                </>
-              )}
-
-              <section className="panel txn-history" aria-labelledby="recent-heading">
-                <div className="panel-head">
-                  <h2 id="recent-heading">Recent transactions</h2>
-                  <span className="count-badge">{recent.length} shown</span>
-                </div>
-                <ul className="txn-list">
-                  {recent.map((txn) => (
-                    <li key={txn.id} className="txn-row">
+          </section>
+        </div>
+        <div className="dashboard-aside">
+          <BuckyPanel
+            profiles={profiles}
+            buckets={buckets}
+            transactions={transactions}
+            products={products}
+            sales={sales}
+            preferredProfileId={
+              view === "business"
+                ? businessId
+                : view === "personal"
+                  ? personalProfiles[0]?.id
+                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
+            }
+          />
+        </div>
+          {scoped.length > 0 && (
+            <Card className="txn-history" aria-labelledby="recent-heading">
+              <div className="panel-head">
+                <div><p className="section-eyebrow">ACTIVITY</p><h2 id="recent-heading">Recent transactions</h2></div>
+                <a className="btn ghost home-history-link" href={fullHistoryHref} aria-label="Open full transaction history for this selection"><Icon name="chevron" /></a>
+              </div>
+              <ul className="txn-list">
+                {recent.map((txn) => {
+                  const display = transactionDisplay(txn.type);
+                  return (
+                    <li key={txn.id} className="txn-row" data-kind={txn.type}>
+                      <span className="record-icon"><Icon name={display.icon} /></span>
                       <div className="txn-main">
                         <strong>{txn.description}</strong>
                         <p className="muted bucket-meta">
-                          {formatDate(txn.date)} · {profileName(txn.profileId)}
-                          {txn.category ? ` · ${txn.category}` : ""}
-                          {bucketName(txn.bucketId) ? ` · ${bucketName(txn.bucketId)}` : ""}
+                          <span className="txn-type" title={display.context}>{display.label}</span>
+                          <span>{formatDate(txn.date)} · {profileName(txn.profileId)}</span>
+                          {txn.category && <span>{txn.category}</span>}
+                          {bucketName(txn.bucketId) && <span>{bucketName(txn.bucketId)}</span>}
                         </p>
                       </div>
-                      <span className={txn.type === "expense" ? "txn-amount amount-out" : "txn-amount amount-in"}>
-                        {txn.type === "expense" ? "−" : "+"}{formatMoney(txn.amountMinor, txn.currency)}
-                      </span>
+                      <div className="txn-value">
+                        <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
+                          {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
+                        </span>
+                        <span className="txn-direction">{display.context}</span>
+                      </div>
                     </li>
-                  ))}
-                </ul>
-              </section>
-            </>
+                  );
+                })}
+              </ul>
+              <a className="dashboard-link home-see-more" href={fullHistoryHref}>See more <Icon name="chevron" /></a>
+            </Card>
           )}
-        </>
-      )}
+      </div>
+      </>}
     </section>
   );
 }

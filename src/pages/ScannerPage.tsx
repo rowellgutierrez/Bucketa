@@ -1,3 +1,5 @@
+import Icon from "../components/ui/Icon";
+import PageHeader from "../components/ui/PageHeader";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import { bucketsRepo, profilesRepo, saveScannerTransactions } from "../data/db";
 import type { Bucket, Profile } from "../data/types";
@@ -1221,45 +1223,36 @@ export default function ScannerPage() {
 
   return (
     <section className="page scanner-page">
-      <header className="dash-header">
-        <div>
-          <h1>AI Record Scanner</h1>
-          <p className="muted dash-subtitle">
-            Photograph handwritten records, review and correct what was read,
-            then save the confirmed entries.
-          </p>
-        </div>
-        <span className="currency-badge">
-          Next scan: {extractionMode === "live" && liveAvailable ? "Live AI test" : "Mock"}
-        </span>
-      </header>
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="BUSINESS TOOLS"
+        title="Bucky Record Scanner"
+        description="Upload a record, review every entry, then confirm what gets saved."
+        actions={<span className="currency-badge">{extractionMode === "live" && liveAvailable ? "Live Meta · test" : "Mock · sample records"}</span>}
+      />
 
       <section className="card scanner-status" aria-labelledby="scanner-status-heading">
-        <h2 id="scanner-status-heading" className="inline-form-title">Scanner connection</h2>
+        <h2 id="scanner-status-heading" className="inline-form-title">{healthStatus === "offline" ? "Scanner unavailable" : "Scanner connection"}</h2>
         {healthStatus === "checking" && <p role="status">Checking scanner connection…</p>}
         {healthStatus === "ready" && health && (
           <>
             <p className="notice" role="status">
-              Backend connected. Mock scanning is the default and uses fictional
-              sample records. Live AI is used only when you deliberately select
-              and confirm it below.
+              Scanner connected. Mock mode returns fictional sample records. Live Meta extraction is used only when you select and confirm it.
             </p>
-            <p className="muted scanner-status-meta">
+            <details className="help-details scanner-connection-details"><summary>Connection details</summary><p className="muted scanner-status-meta">
               Meta live: {health.liveMeta === "enabled-gated" ? "enabled (gated)" : "disabled"} ·
               Live requests used: {health.liveRequestsUsed} of {health.liveRequestsLimit} ·{" "}
               {liveRequestsRemaining === null
                 ? "Remaining live quota unavailable until the connection is refreshed"
                 : `Live requests remaining: ${liveRequestsRemaining}`}
-            </p>
+            </p></details>
           </>
         )}
         {healthStatus === "offline" && (
           <>
-            <p className="alert-error" role="alert">Scanner backend offline: {healthError}</p>
-            <p className="muted">
-              Start the local server with <code>npm run server</code>, then retry.
-              The rest of Bucketa still works without it.
-            </p>
+            <p className="alert-error" role="alert">{healthError}</p>
+            <p className="muted">Your saved records and the rest of Bucketa remain available.</p>
+            <details className="help-details"><summary>Troubleshoot connection</summary><p>Start the local scanning service with <code>npm run server</code>, then retry.</p></details>
             <button className="btn" type="button" onClick={() => setHealthAttempt((v) => v + 1)}>
               Retry connection
             </button>
@@ -1267,9 +1260,9 @@ export default function ScannerPage() {
         )}
       </section>
 
-      {dataStatus === "loading" && <div className="card" role="status">Loading profiles and buckets…</div>}
+      {dataStatus === "loading" && <div className="card loading-state" role="status">Loading profiles and buckets…</div>}
       {dataStatus === "error" && (
-        <div className="card">
+        <div className="card feedback-error">
           <p className="alert-error" role="alert">Could not load profiles: {dataError}</p>
           <button className="btn" type="button" onClick={() => void loadProfiles()}>Retry</button>
         </div>
@@ -1277,7 +1270,7 @@ export default function ScannerPage() {
 
       {dataStatus === "ready" && profiles.length === 0 && (
         <div className="card empty-state">
-          <p>No personal or business profile yet.</p>
+          <span className="metric-icon"><Icon name="scanner" /></span><h2>Choose where your records belong</h2>
           <p className="muted">
             Create one in <a href="#/personal">Personal Finance</a> or{" "}
             <a href="#/buckets">Business Buckets</a>, then return here to scan
@@ -2025,7 +2018,7 @@ export default function ScannerPage() {
                     <a className="btn" href={activeProfile?.kind === "business" ? "#/transactions" : "#/personal"}>
                       View saved records
                     </a>
-                    <a className="btn ghost" href="#/dashboard">Open Dashboard</a>
+                    <a className="btn ghost" href="#/dashboard">Open Home</a>
                     <button className="btn ghost" type="button" onClick={clearImage}>Scan another record</button>
                   </div>
                 </div>

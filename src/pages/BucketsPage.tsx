@@ -1,3 +1,4 @@
+import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   bucketsRepo,
@@ -438,27 +439,20 @@ export default function BucketsPage() {
 
   return (
     <section className="page buckets-dashboard">
-      <header className="dash-header">
-        <div>
-          <h1>Business Buckets</h1>
-          <p className="muted dash-subtitle">
-            Buckets are envelopes inside one business — for example Rent, Supplies, or Tax — so each part of the business money has a job.
-          </p>
-        </div>
-        {activeProfile && (
-          <button
-            className="btn"
-            type="button"
-            aria-expanded={showBucketForm}
-            onClick={() => setShowBucketForm((v) => !v)}
-          >
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="TRACK MONEY"
+        title="Business Buckets"
+        description="Give your business money a purpose. Organise savings, budgets, and allocated funds in one place."
+        actions={activeProfile ? (
+          <button className="btn" type="button" aria-expanded={showBucketForm} onClick={() => setShowBucketForm((v) => !v)}>
             {showBucketForm ? "Close" : "Add Bucket"}
           </button>
-        )}
-      </header>
+        ) : undefined}
+      />
 
       {status === "loading" && (
-        <div className="card" role="status">Loading your businesses and buckets…</div>
+        <div className="card loading-state" role="status">Loading your businesses and buckets…</div>
       )}
 
       {status === "error" && (
@@ -585,8 +579,8 @@ export default function BucketsPage() {
           )}
 
           {(showCreateBusiness || profiles.length === 0) && (
-            <form className="card inline-form" onSubmit={onCreateProfile} noValidate>
-              <h2 className="inline-form-title">Create a business</h2>
+            <form className={profiles.length === 0 ? "card inline-form business-onboarding" : "card inline-form"} onSubmit={onCreateProfile} noValidate>
+              <div className="business-onboarding-heading"><h2 className="inline-form-title">Create a business</h2>{profiles.length === 0 && <p className="muted">Start with a name and default currency. Add buckets for Rent, Tax, or your next goal.</p>}</div>
               <div className="form-row">
                 <div className="field">
                   <label htmlFor="profile-name">Business name</label>
@@ -959,10 +953,9 @@ export default function BucketsPage() {
             </section>
           ) : (
             profiles.length === 0 && (
-              <div className="card empty-state">
-                <p>No businesses yet.</p>
+              <div className="empty-state setup-note">
                 <p className="muted">
-                  Use the “Create a business” form above (step 1). After that, add buckets for it here (step 2), then record its income and expenses in Transactions and assign them to a bucket. Each business, its buckets, and its currency stay separate.
+                  Each business keeps its own records and currencies.
                 </p>
               </div>
             )

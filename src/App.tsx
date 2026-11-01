@@ -11,10 +11,10 @@ import ScannerPage from "./pages/ScannerPage";
 import SettingsPage from "./pages/SettingsPage";
 
 const ROUTES: Route[] = [
-  { id: "dashboard", label: "Dashboard", shortLabel: "Home", group: "Overview" },
-  { id: "personal", label: "Personal Finance", shortLabel: "Personal", group: "Track money" },
-  { id: "transactions", label: "Transactions", shortLabel: "Records", group: "Track money" },
+  { id: "dashboard", label: "Home", shortLabel: "Home", group: "Overview" },
+  { id: "personal", label: "Personal Finance", shortLabel: "Personal Finance", group: "Track money" },
   { id: "buckets", label: "Business Buckets", shortLabel: "Buckets", group: "Track money" },
+  { id: "transactions", label: "Transactions", shortLabel: "Records", group: "Track money" },
   { id: "products", label: "Products and Inventory", shortLabel: "Products", group: "Business tools" },
   { id: "pos", label: "Sales / POS", shortLabel: "POS", group: "Business tools" },
   { id: "employees", label: "Employees and Salaries", shortLabel: "Staff", group: "Business tools", planned: true },
@@ -23,7 +23,7 @@ const ROUTES: Route[] = [
 ];
 
 function routeFromHash(): string {
-  const id = window.location.hash.replace(/^#\/?/, "");
+  const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
   return ROUTES.some((r) => r.id === id) ? id : "dashboard";
 }
 

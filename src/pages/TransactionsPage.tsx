@@ -1,4 +1,8 @@
+import { parseHistoryScope, selectHistory, type HistoryRequest } from "../lib/historyScope";
+import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { transactionDisplay } from "../lib/transactionDisplay";
+import Icon from "../components/ui/Icon";
 import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Profile, Transaction } from "../data/types";
 import {
@@ -71,7 +75,7 @@ interface CurrencySummary {
   net: number;
 }
 
-export default function TransactionsPage() {
+function BusinessTransactionsPage() {
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -438,31 +442,24 @@ export default function TransactionsPage() {
 
   return (
     <section className="page transactions-page">
-      <header className="dash-header">
-        <div>
-          <h1>Transactions</h1>
-          <p className="muted dash-subtitle">
-            Income and expenses for one business, kept separate by currency.
-          </p>
-        </div>
-        {activeProfile && (
-          <button
-            className="btn"
-            type="button"
-            aria-expanded={showForm}
-            onClick={() => (showForm ? setShowForm(false) : startCreate())}
-          >
-            {showForm ? "Close" : "Add Transaction"}
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="TRACK MONEY"
+        title="Transactions"
+        description="Review and manage each business’s income and expenses, currency by currency."
+        actions={activeProfile ? (
+          <button className="btn" type="button" aria-expanded={showForm} onClick={() => (showForm ? setShowForm(false) : startCreate())}>
+            {showForm ? "Close" : "Add transaction"}
           </button>
-        )}
-      </header>
+        ) : undefined}
+      />
 
       {status === "loading" && (
-        <div className="card" role="status">Loading transactions…</div>
+        <div className="card loading-state" role="status">Loading transactions…</div>
       )}
 
       {status === "error" && (
-        <div className="card">
+        <div className="card feedback-error">
           <p className="alert-error" role="alert">Could not load transactions: {loadError}</p>
           <button className="btn" type="button" onClick={() => void load(profileId)}>Retry</button>
         </div>
@@ -470,11 +467,10 @@ export default function TransactionsPage() {
 
       {status === "ready" && profiles.length === 0 && (
         <div className="card empty-state">
-          <p>No businesses yet.</p>
+          <span className="metric-icon"><Icon name="transactions" /></span><h2>A clear view of your business money</h2>
           <p className="muted">
-            Transactions belong to a business. Create one first on the{" "}
-            <a href="#/buckets">Business Buckets page</a>, then record income and
-            expenses here.
+            Create a business on the{" "}
+            <a href="#/buckets">Buckets page</a>, then record income and expenses here.
           </p>
         </div>
       )}
@@ -797,13 +793,15 @@ export default function TransactionsPage() {
               <ul className="txn-list">
                 {transactions.map((txn) => {
                   const editable = isCorrectableTransaction(txn);
+                      const display = transactionDisplay(txn.type);
                   const assignedBucket = bucketName(txn.bucketId);
                   return (
-                    <li key={txn.id} className="txn-row">
+                    <li key={txn.id} className="txn-row" data-kind={txn.type}>
+                          <span className="record-icon"><Icon name={display.icon} /></span>
                       <div className="txn-main">
                         <strong>{txn.description}</strong>
                         <p className="muted bucket-meta">
-                          {formatDate(txn.date)} · {TYPE_LABELS[txn.type]}
+                          {formatDate(txn.date)} · <span className="txn-type" title={display.context}>{display.label}</span>
                           {txn.category ? ` · ${txn.category}` : ""}
                           {assignedBucket ? ` · ${assignedBucket}` : ""}
                           {txn.origin === "scanner-confirmed"
@@ -813,14 +811,12 @@ export default function TransactionsPage() {
                               : ""}
                         </p>
                       </div>
-                      <span
-                        className={
-                          txn.type === "expense" ? "txn-amount amount-out" : "txn-amount amount-in"
-                        }
-                      >
-                        {txn.type === "expense" ? "−" : "+"}
-                        {formatMoney(txn.amountMinor, txn.currency)}
-                      </span>
+                      <div className="txn-value">
+                            <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
+                              {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
+                            </span>
+                            <span className="txn-direction">{display.context}</span>
+                          </div>
                       {editable ? (
                         <div className="row-actions txn-actions">
                           <button
@@ -854,4 +850,65 @@ export default function TransactionsPage() {
       )}
     </section>
   );
+}
+
+
+// Separate mounted views keep business mutation controls out of full history.
+export default function TransactionsPage() {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const request = useMemo(() => parseHistoryScope(hash), [hash]);
+  return request ? <FullHistory key={hash} request={request} /> : <BusinessTransactionsPage />;
+}
+
+function FullHistory({ request }: { request: HistoryRequest }) {
+  const [data, setData] = useState<{ profiles: Profile[]; buckets: Bucket[]; records: Transaction[] } | null>(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!request.context) return;
+    let active = true;
+    setError("");
+    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll()])
+      .then(([profiles, buckets, records]) => { if (active) setData({ profiles, buckets, records }); })
+      .catch(reason => { if (active) setError(errorMessage(reason)); });
+    return () => { active = false; };
+  }, [request.context, attempt]);
+  const selection = data && request.context ? selectHistory(data.records, data.profiles, request.context) : null;
+  const problem = request.error || error || selection?.error;
+  const context = request.context;
+  const scopeLabel = !context ? "Selection unavailable" : context.scope === "business" ? data?.profiles.find(p => p.id === context.profileId)?.name ?? "Business" : context?.scope === "personal" ? "Personal profiles" : "All profiles";
+  return <section className="page transactions-page full-history-page">
+    <PageHeader className="workspace-page-header" eyebrow="TRACK MONEY" title="Transaction history"
+      description="Your selected activity, including savings and transfers. Read-only."
+      actions={<a className="btn ghost" href="#/transactions">Manage business transactions</a>} />
+    <div className="history-context card">
+      <strong>{scopeLabel}</strong>
+      {context && <span className="muted">{context.from || "Beginning"} → {context.to || "All dates"} · All recorded currencies</span>}
+      <a href="#/dashboard">Return to Home</a>
+    </div>
+    {problem ? <div className="card feedback-error"><p className="alert-error" role="alert">{problem}</p>{error && <button className="btn" onClick={() => setAttempt(n => n + 1)}>Retry</button>}</div>
+      : !data ? <div className="card loading-state" role="status">Loading history…</div>
+      : <section className="panel txn-history" aria-labelledby="full-history-heading">
+        <div className="panel-head"><h2 id="full-history-heading">All matching activity</h2><span className="count-badge">{selection?.records.length ?? 0} {selection?.records.length === 1 ? "record" : "records"}</span></div>
+        {!selection?.records.length ? <div className="empty-state"><p>No records match this selection.</p><a href="#/dashboard">Choose different Home filters</a></div>
+          : <ul className="txn-list">{selection.records.map(txn => {
+            const display = transactionDisplay(txn.type);
+            const bucket = data.buckets.find(b => b.id === txn.bucketId);
+            return <li key={txn.id} className="txn-row" data-kind={txn.type}>
+              <span className="record-icon"><Icon name={display.icon} /></span>
+              <div className="txn-main"><strong>{txn.description}</strong><p className="muted bucket-meta">
+                <span className="txn-type" title={display.context}>{display.label}</span>
+                <span>{formatDate(txn.date)} · {data.profiles.find(p => p.id === txn.profileId)?.name}</span>
+                {bucket && <span>{bucket.name}</span>}{txn.category && <span>{txn.category}</span>}
+              </p></div>
+              <div className="txn-value"><span className={"txn-amount " + display.amountClass} aria-label={display.context + ": " + display.sign + formatMoney(txn.amountMinor, txn.currency)}>{display.sign}{formatMoney(txn.amountMinor, txn.currency)}</span><span className="txn-direction">{txn.currency} · {display.context}</span></div>
+            </li>;
+          })}</ul>}
+      </section>}
+  </section>;
 }

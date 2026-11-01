@@ -9,6 +9,7 @@ import {
 } from "../lib/buckyAgent.ts";
 import { BuckyApiError, requestBuckyAdvice, type BuckyAdviceResponse } from "../lib/buckyApi.ts";
 import BuckyMascot from "./BuckyMascot";
+import Icon from "./ui/Icon";
 
 interface Props {
   profiles: Profile[];
@@ -121,20 +122,21 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   return (
     <section className="panel bucky-panel" aria-labelledby="bucky-panel-heading">
       <div className="bucky-panel-head">
-        <BuckyMascot size="panel" talking={advisorBusy} label="Bucky, your financial assistant" />
+        <span className="bucky-brand-icon"><Icon name="sparkles" /></span>
         <div>
-          <h2 id="bucky-panel-heading">Bucky Agent</h2>
+          <h2 id="bucky-panel-heading">Bucky Financial Intelligence</h2>
           <p className="muted">
-            Calculated from your saved records — deterministic analysis, not AI-generated.
-            Bucky can suggest where to look, but it never changes your data.
+            Insights from your saved records
           </p>
         </div>
       </div>
 
+      <div className="bucky-stage"><span className="bucky-stage-label"><Icon name="sparkles" /> APP-WIDE INTELLIGENCE</span><BuckyMascot talking={advisorBusy} label="Bucky, your financial intelligence companion" /><span className="bucky-stage-status">{advisorBusy ? "Requesting advice…" : "Ready when you are"}</span></div>
+      <div className="bucky-interactions">
+      <div className="bucky-intro"><h3>A little clarity. A lot of possibility.</h3><p className="muted">Calculated insights from your saved records. Bucky suggests where to look; it never changes your data.</p></div>
       {profiles.length === 0 ? (
         <div className="empty-state">
-          <p>No profile to analyse yet.</p>
-          <p className="muted">Create a personal profile or a business first, then Bucky can analyse its records.</p>
+          <p className="muted">Create a profile to unlock insights from your saved records.</p>
           <div className="row-actions">
             <a className="btn ghost small" href="#/personal">Set up a profile</a>
           </div>
@@ -166,16 +168,44 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             </div>
           )}
 
+          <form
+            className="bucky-ask"
+            onSubmit={(e) => {
+              e.preventDefault();
+              ask(question);
+            }}
+          >
+            <label htmlFor="bucky-question">Ask Bucky about {analysis.profileName}</label>
+            <div className="bucky-ask-row">
+              <input
+                id="bucky-question"
+                className="input"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask about spending, savings, or sales…"
+                autoComplete="off"
+              />
+              <button className="btn" type="submit" disabled={!question.trim()}>Ask Bucky</button>
+            </div>
+            <p className="bucky-suggestions-label">Try a question</p>
+            <div className="bucky-chips" role="group" aria-label="Suggested questions">
+              {QUESTIONS.map((q) => (
+                <button key={q} className="btn ghost small" type="button" onClick={() => ask(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          </form>
+
           {!analysis.hasAnyData ? (
             <div className="empty-state">
               <p>No records to analyse for {analysis.profileName} yet.</p>
               <p className="muted">
-                Add a record manually or scan a handwritten record. Bucky only
-                analyses real saved records and never invents data.
+                Add your first record to see insights here.
               </p>
             </div>
           ) : (
-            <ul className="bucky-insights">
+            <details className="bucky-insight-details"><summary>Financial insights <span className="count-badge">{analysis.insights.length}</span></summary><ul className="bucky-insights">
               {analysis.insights.map((insight) => {
                 const proposal = insight.proposalId
                   ? analysis.proposals.find((p) => p.id === insight.proposalId)
@@ -202,36 +232,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                   </li>
                 );
               })}
-            </ul>
+            </ul></details>
           )}
 
-          <form
-            className="bucky-ask"
-            onSubmit={(e) => {
-              e.preventDefault();
-              ask(question);
-            }}
-          >
-            <label htmlFor="bucky-question">Ask Bucky about {analysis.profileName}</label>
-            <div className="bucky-ask-row">
-              <input
-                id="bucky-question"
-                className="input"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Why are my expenses increasing?"
-                autoComplete="off"
-              />
-              <button className="btn" type="submit" disabled={!question.trim()}>Ask</button>
-            </div>
-            <div className="bucky-chips" role="group" aria-label="Suggested questions">
-              {QUESTIONS.map((q) => (
-                <button key={q} className="btn ghost small" type="button" onClick={() => ask(q)}>
-                  {q}
-                </button>
-              ))}
-            </div>
-          </form>
+
 
           {answer && (
             <div className="bucky-answer" role="status">
@@ -257,13 +261,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             </div>
           )}
 
-          <div className="bucky-advisor">
-            <h3>Meta-powered Bucky</h3>
+          <details className="bucky-advisor">
+            <summary>Meta-powered advice <span className="count-badge">Optional</span></summary>
+            <div className="bucky-advisor-body">
             <p className="muted">
-              Sends only aggregated totals for {analysis.profileName} to the local
-              Bucketa server — never raw records. Live Meta answers require the
-              server's live gates and a runtime token; otherwise the server
-              returns a clearly labelled calculated fallback.
+              Uses only aggregated totals for {analysis.profileName}, never individual records. Live Meta requires an enabled service and a runtime token. Otherwise, advice is clearly labelled as a calculated fallback.
             </p>
             <label className="bucky-live-toggle">
               <input
@@ -275,7 +277,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             </label>
             {useLiveMeta && (
               <div className="field">
-                <label htmlFor="bucky-live-token">Live test token (runtime only, never saved)</label>
+                <label htmlFor="bucky-live-token">Live test token (not saved)</label>
                 <input
                   id="bucky-live-token"
                   className="input"
@@ -305,13 +307,13 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                   <span className="currency-badge">
                     {advisor.source === "meta-live"
                       ? `Meta AI${advisor.model ? ` · ${advisor.model}` : ""}`
-                      : "Deterministic fallback — not Meta AI"}
+                      : "Calculated fallback — not Meta AI"}
                   </span>
                 </p>
                 <p>{advisor.answer}</p>
                 {advisor.diagnostic && (
                   <p className="muted">
-                    Live diagnostic: {advisor.diagnostic.category}
+                    Service status: {advisor.diagnostic.category}
                     {advisor.diagnostic.subReason ? ` / ${advisor.diagnostic.subReason}` : ""}
                     {advisor.diagnostic.upstreamStatus ? ` (HTTP ${advisor.diagnostic.upstreamStatus})` : ""}
                   </p>
@@ -345,7 +347,8 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 )}
               </div>
             )}
-          </div>
+            </div>
+          </details>
 
           <details className="bucky-limitations">
             <summary>How Bucky calculates this</summary>
@@ -357,6 +360,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
           </details>
         </>
       ) : null}
+      </div>
     </section>
   );
 }

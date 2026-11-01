@@ -1,22 +1,30 @@
 /* Bucketa design tokens — reusable design system. Import this file, use the variables. */
 :root{
-  --bk-navy-950:#07182E; --bk-navy-900:#014184; --bk-navy-800:#10365E;
-  --bk-blue-700:#1D4ED8; --bk-blue-600:#2563EB; --bk-blue-500:#3B82F6;
-  --bk-sky-400:#38BDF8; --bk-sky-100:#E0F2FE;
-  --bk-bg:#F4F8FC; --bk-surface:#FFFFFF; --bk-surface-2:#EDF3F9;
-  --bk-text:#0F2440; --bk-text-2:#486581; --bk-border:#D9E4F0;
-  --bk-success:#0E9F6E; --bk-warning:#D97706; --bk-danger:#DC2626;
-  --bk-gradient:linear-gradient(135deg,#014184 0%,#2563EB 55%,#38BDF8 130%);
+  --bk-navy-950:#092C39; --bk-navy-900:#164653; --bk-navy-800:#16434D;
+  --bk-blue-700:#066874; --bk-blue-600:#087E8B; --bk-blue-500:#087E8B;
+  --bk-sky-400:#56D8C7; --bk-sky-100:#F2FAF9;
+  --bk-bg:#F2FAF9; --bk-surface:#FFFFFF; --bk-surface-2:#EAF5F3;
+  --bk-text:#092C39; --bk-text-2:#506F76; --bk-border:#CFE3E0;
+  --bk-success:#087F5B; --bk-warning:#D97706; --bk-danger:#DC2626;
+  --bk-gradient:linear-gradient(110deg,#087E8B 0%,#096674 48%,#092C39 100%);
+  --bk-chart-secondary:#092C39; --bk-accent-text:#066874;
+  --bk-sidebar:#092C39; --bk-sidebar-text:#B5D3D5;
+  --bk-mint:#56D8C7; --bk-on-mint:#092C39;
+  --bk-space-1:4px; --bk-space-2:8px; --bk-space-3:12px; --bk-space-4:16px; --bk-space-6:24px; --bk-space-8:32px;
   --bk-font-display:"Plus Jakarta Sans","Segoe UI",system-ui,sans-serif;
   --bk-font-body:"Plus Jakarta Sans","Segoe UI",system-ui,-apple-system,sans-serif;
-  --bk-radius-sm:8px; --bk-radius:12px; --bk-radius-lg:18px;
-  --bk-shadow:0 1px 2px rgba(10,37,64,.06),0 8px 24px -12px rgba(10,37,64,.18);
-  --bk-shadow-lg:0 2px 4px rgba(10,37,64,.06),0 20px 44px -16px rgba(10,37,64,.28);
+  --bk-radius-sm:8px; --bk-radius:12px; --bk-radius-lg:24px;
+  --bk-shadow:0 1px 2px rgba(9,44,57,.06),0 8px 24px -12px rgba(9,44,57,.18);
+  --bk-shadow-lg:0 2px 4px rgba(9,44,57,.06),0 20px 44px -16px rgba(9,44,57,.28);
   --bk-space:8px;
 }
 [data-theme="dark"]{
-  --bk-bg:#07182E; --bk-surface:#0C2A4D; --bk-surface-2:#10365E;
-  --bk-text:#F2F7FC; --bk-text-2:#A9C2DC; --bk-border:#1E4A75;
+  color-scheme:dark;
+  --bk-sky-100:#16434D; --bk-blue-700:#56D8C7; --bk-accent-text:#56D8C7;
+  --bk-navy-900:#DAEFEB; --bk-chart-secondary:#9FC9CA;
+  --bk-success:#51DBAF; --bk-danger:#FF9292; --bk-warning:#FFC36C;
+  --bk-bg:#071F29; --bk-surface:#0D303B; --bk-surface-2:#16434D;
+  --bk-text:#EFF9F7; --bk-text-2:#ABCACB; --bk-border:#2D5962;
   --bk-shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.5);
   --bk-shadow-lg:0 2px 4px rgba(0,0,0,.3),0 20px 44px -16px rgba(0,0,0,.6);
 }

@@ -45,8 +45,7 @@ export default function GettingStarted({ title, intro, steps, collapsed = false 
         ))}
       </ol>
       <p className="muted getting-note">
-        No account or sign-up needed. Bucketa only summarises records you enter,
-        and your data stays in this browser.
+        Records are saved in this browser. Your summaries use only what you record.
       </p>
     </>
   );
