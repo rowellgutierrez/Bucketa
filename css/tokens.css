@@ -1,30 +1,34 @@
 /* Bucketa design tokens — reusable design system. Import this file, use the variables. */
 :root{
-  --bk-navy-950:#092C39; --bk-navy-900:#164653; --bk-navy-800:#16434D;
-  --bk-blue-700:#066874; --bk-blue-600:#087E8B; --bk-blue-500:#087E8B;
-  --bk-sky-400:#56D8C7; --bk-sky-100:#F2FAF9;
-  --bk-bg:#F2FAF9; --bk-surface:#FFFFFF; --bk-surface-2:#EAF5F3;
-  --bk-text:#092C39; --bk-text-2:#506F76; --bk-border:#CFE3E0;
-  --bk-success:#087F5B; --bk-warning:#D97706; --bk-danger:#DC2626;
-  --bk-gradient:linear-gradient(110deg,#087E8B 0%,#096674 48%,#092C39 100%);
-  --bk-chart-secondary:#092C39; --bk-accent-text:#066874;
-  --bk-sidebar:#092C39; --bk-sidebar-text:#B5D3D5;
-  --bk-mint:#56D8C7; --bk-on-mint:#092C39;
+  --bk-navy-950:#282326; --bk-navy-900:#443B38; --bk-navy-800:#443B38;
+  --bk-blue-700:#913A20; --bk-blue-600:#A74627; --bk-blue-500:#A74627;
+  --bk-sky-400:#B95431; --bk-sky-100:#F1EAE5;
+  --bk-bg:#FAF7F3; --bk-surface:#FFFFFF; --bk-surface-2:#F1EAE5;
+  --bk-text:#282326; --bk-text-2:#6D6260; --bk-border:#DDD4CF; --bk-control-border:#91817B;
+  --bk-success:#08704F; --bk-warning:#8C5708; --bk-danger:#B42335;
+  --bk-gradient:linear-gradient(110deg,#A74627 0%,#763D2C 48%,#282326 100%);
+  --bk-chart-secondary:#282326; --bk-accent-text:#913A20;
+  --bk-sidebar:#282326; --bk-sidebar-text:#D9CECA; --bk-sidebar-active:#3C3434;
+  --bk-primary-hover:#913A20; --bk-on-primary:#FFFFFF; --bk-danger-fill:#B42335;
+  --bk-mint:#B95431; --bk-on-mint:#282326;
+  --bk-bucky-stage:#EDE7E2; --bk-bucky-glow:#FFFFFF;
   --bk-space-1:4px; --bk-space-2:8px; --bk-space-3:12px; --bk-space-4:16px; --bk-space-6:24px; --bk-space-8:32px;
   --bk-font-display:"Plus Jakarta Sans","Segoe UI",system-ui,sans-serif;
   --bk-font-body:"Plus Jakarta Sans","Segoe UI",system-ui,-apple-system,sans-serif;
   --bk-radius-sm:8px; --bk-radius:12px; --bk-radius-lg:24px;
-  --bk-shadow:0 1px 2px rgba(9,44,57,.06),0 8px 24px -12px rgba(9,44,57,.18);
-  --bk-shadow-lg:0 2px 4px rgba(9,44,57,.06),0 20px 44px -16px rgba(9,44,57,.28);
+  --bk-shadow:0 1px 2px rgba(40,35,38,.06),0 8px 24px -12px rgba(40,35,38,.18);
+  --bk-shadow-lg:0 2px 4px rgba(40,35,38,.06),0 20px 44px -16px rgba(40,35,38,.28);
   --bk-space:8px;
 }
 [data-theme="dark"]{
   color-scheme:dark;
-  --bk-sky-100:#16434D; --bk-blue-700:#56D8C7; --bk-accent-text:#56D8C7;
-  --bk-navy-900:#DAEFEB; --bk-chart-secondary:#9FC9CA;
+  --bk-blue-600:#E66A3D; --bk-primary-hover:#F17C50; --bk-on-primary:#282326;
+  --bk-sky-100:#393438; --bk-blue-700:#EFA887; --bk-blue-500:#E66A3D; --bk-accent-text:#EFA887;
+  --bk-navy-900:#F0E6E1; --bk-chart-secondary:#B4A5A0;
   --bk-success:#51DBAF; --bk-danger:#FF9292; --bk-warning:#FFC36C;
-  --bk-bg:#071F29; --bk-surface:#0D303B; --bk-surface-2:#16434D;
-  --bk-text:#EFF9F7; --bk-text-2:#ABCACB; --bk-border:#2D5962;
+  --bk-bg:#181719; --bk-surface:#2D292D; --bk-surface-2:#393438;
+  --bk-text:#F8F3EF; --bk-text-2:#C9BDB8; --bk-border:#655C62; --bk-control-border:#978A92;
+  --bk-bucky-stage:#393438; --bk-bucky-glow:#494249;
   --bk-shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.5);
   --bk-shadow-lg:0 2px 4px rgba(0,0,0,.3),0 20px 44px -16px rgba(0,0,0,.6);
 }
