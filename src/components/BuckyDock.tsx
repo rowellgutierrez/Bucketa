@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {getBuckyPresentation,subscribeBuckyPresentation,setBuckyOpen,recordBuckyEvent} from "../lib/buckyPresentation";
+import BuckyStatusMascot from "./BuckyStatusMascot";
+import {formatMoney} from "../lib/currency";
+import { BUCKY_OPEN_EVENT, type BuckyConversationRequest } from "../lib/buckyConversation";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { bucketsRepo, employeesRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types";
-import BuckyMascot from "./BuckyMascot";
 import BuckyPanel from "./BuckyPanel";
 import ScannerPage from "../pages/ScannerPage";
 import { onRecordsChanged } from "../lib/dataChange";
@@ -20,8 +23,13 @@ type Status = "idle" | "loading" | "ready" | "error";
  * closing (Escape, backdrop, or the close button) until the user confirms
  * or cancels it, so a prepared record is never silently discarded.
  */
-export default function BuckyDock() {
+export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolean}) {
+  const presentation = useSyncExternalStore(subscribeBuckyPresentation,getBuckyPresentation,getBuckyPresentation);
+  const [request, setRequest] = useState<BuckyConversationRequest | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [requestReady, setRequestReady] = useState(false);
   const [open, setOpen] = useState(false);
+  const [navigationKey, setNavigationKey] = useState(() => window.location.hash);
   const [status, setStatus] = useState<Status>("idle");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
@@ -38,13 +46,9 @@ export default function BuckyDock() {
   const [scannerDirty, setScannerDirty] = useState(false);
   const handleScannerDirty = useCallback((dirty: boolean) => setScannerDirty(dirty), []);
   const dialog = useRef<HTMLDialogElement>(null);
+  const pendingHintRef = useRef<HTMLParagraphElement>(null);
   const launcher = useRef<HTMLButtonElement>(null);
-  const reducedMotion = useRef(
-    typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  ).current;
-
+  const returnFocus = useRef<HTMLElement | null>(null);
   const load = useCallback(async (silent = false) => {
     if (!silent) setStatus("loading");
     try {
@@ -62,9 +66,11 @@ export default function BuckyDock() {
       setProducts(pr);
       setSales(s);
       setEmployees(e);
+      setRequestReady(true);
+      setLoaded(true);
       setStatus("ready");
     } catch {
-      if (!silent) setStatus("error");
+      setStatus("error");
     }
   }, []);
 
@@ -72,25 +78,86 @@ export default function BuckyDock() {
     const el = dialog.current;
     if (!el) return;
     if (open && !el.open) {
-      void load();
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
       el.showModal();
     }
     if (!open && el.open) {
       el.close();
-      launcher.current?.focus();
+      if (returnFocus.current?.isConnected) returnFocus.current.focus();
+      else launcher.current?.focus();
     }
-  }, [open, load]);
+  }, [open, load, loaded]);
+
+  useEffect(() => {
+    const navigate = () => setNavigationKey(window.location.hash);
+    window.addEventListener('hashchange', navigate);
+    return () => window.removeEventListener('hashchange', navigate);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const root = document.documentElement;
+    const body = document.body;
+    const previous = {root: root.style.overflow, body: body.style.overflow};
+    root.style.overflow = 'hidden'; body.style.overflow = 'hidden';
+    const viewport = window.visualViewport;
+    const update = () => {
+      const el = dialog.current; if (!el) return;
+      el.style.setProperty('--bucky-viewport-height', (viewport?.height ?? window.innerHeight) + 'px');
+      el.style.setProperty('--bucky-viewport-width', (viewport?.width ?? window.innerWidth) + 'px');
+      el.style.setProperty('--bucky-viewport-top', (viewport?.offsetTop ?? 0) + 'px');
+      el.style.setProperty('--bucky-viewport-left', (viewport?.offsetLeft ?? 0) + 'px');
+    };
+    update(); window.addEventListener('resize', update);
+    viewport?.addEventListener('resize', update); viewport?.addEventListener('scroll', update);
+    return () => {
+      root.style.overflow = previous.root; body.style.overflow = previous.body;
+      window.removeEventListener('resize', update);
+      viewport?.removeEventListener('resize', update); viewport?.removeEventListener('scroll', update);
+    };
+  }, [open]);
+
+  useEffect(() => {setBuckyOpen(open);},[open]);
 
   // Confirmed saves anywhere (including the embedded scanner) refresh the
   // panel's data silently so answers stay current without a reopen.
-  useEffect(() => onRecordsChanged(() => { void load(true); }), [load]);
+  useEffect(() => onRecordsChanged(detail => {
+    void load(true);
+    if(detail.kind==='pos-sale-completed' && detail.recordId && detail.profileId){
+      void Promise.all([salesRepo.getById(detail.recordId),profilesRepo.getById(detail.profileId)]).then(([sale,owner])=>{
+        if(!sale||!owner||sale.profileId!==owner.id||owner.kind!=='business'||sale.currency!==owner.currency)return;
+        recordBuckyEvent({id:'pos:'+sale.id,status:'saved',title:'POS checkout completed',detail:formatMoney(sale.totalMinor,sale.currency)+' · '+(sale.receiptNumber??sale.id),profileId:owner.id,profileName:owner.name,currency:sale.currency,recordId:sale.id});
+      }).catch(()=>{});
+    }
+  }), [load]);
 
   // The protection hint lasts only while a preview is actually pending.
   useEffect(() => {
     if (!hasPendingAction && !scannerDirty) setShowPendingHint(false);
-  }, [hasPendingAction, scannerDirty]);
+  }, [hasPendingAction, scannerDirty, load, loaded]);
+
+  // A blocked close (Escape/backdrop/X) must be seen immediately: the hint
+  // sits at the dialog top, so scroll it into view and focus it.
+  useEffect(() => {
+    if (!showPendingHint) return;
+    const el = pendingHintRef.current;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+  }, [showPendingHint]);
 
   const hasUnsavedWork = hasPendingAction || (scanMode && scannerDirty);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      setOpen(true);
+      if (hasPendingAction || scannerDirty) { setShowPendingHint(true); return; }
+      setRequestReady(false);
+      void load(loaded);
+      setScanMode(false); setRequest((event as CustomEvent<BuckyConversationRequest>).detail);
+    };
+    window.addEventListener(BUCKY_OPEN_EVENT, receive);
+    return () => window.removeEventListener(BUCKY_OPEN_EVENT, receive);
+  }, [hasPendingAction, scannerDirty]);
 
   /** Returns true when closing (and therefore navigation) is allowed. */
   function requestClose(): boolean {
@@ -122,17 +189,17 @@ export default function BuckyDock() {
 
   return (
     <>
-      {!open && (
+      {!open && !hideLauncher && (
         <button
           ref={launcher}
           className="bucky-dock-launcher bucky-dock-launcher--mascot"
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => { setRequestReady(false); void load(loaded); setOpen(true); }}
           aria-haspopup="dialog"
           aria-label="Open Bucky, your financial assistant"
         >
-          <BuckyMascot animation={reducedMotion ? undefined : "Breathing"} label="" />
-          <span>Bucky</span>
+          <BuckyStatusMascot label="Bucky" />
+
         </button>
       )}
       <dialog
@@ -151,51 +218,36 @@ export default function BuckyDock() {
         }}
       >
         <div className="bucky-dock-head">
-          {/* The panel inside carries the full "Bucky Financial
-              Intelligence" heading; the dialog keeps a short label so the
-              branding is not duplicated on narrow screens. */}
-          <h2 id="bucky-dock-heading">{scanMode ? "Scan a record" : "Bucky"}</h2>
+
+          <div className="bucky-dock-identity">{open && !scanMode && <div className="bucky-dock-avatar"><BuckyStatusMascot /></div>}<div><h2 id="bucky-dock-heading">{scanMode ? "Scan a record" : "Bucky Financial Intelligence"}</h2>{!scanMode && presentation.label && !['idle','error','warning'].includes(presentation.phase) && <p className={'bucky-live-state bucky-live-state--'+presentation.phase} role="status">{presentation.label}</p>}</div></div>
           <div className="row-actions">
             {scanMode && (
               <button className="btn ghost" type="button" onClick={exitScanMode}>
                 Back to Bucky
               </button>
             )}
+            <button className="btn ghost" type="button" onClick={requestClose} aria-label="Minimize Bucky">−</button>
             <button className="btn ghost" type="button" onClick={requestClose} aria-label="Close Bucky">
               <Icon name="close" />
             </button>
           </div>
         </div>
         {showPendingHint && hasUnsavedWork && (
-          <p className="alert-error" role="alert">
+          <p ref={pendingHintRef} tabIndex={-1} className="alert-error bucky-dock-pending-hint" role="alert">
             {scanMode && scannerDirty
-              ? "You have an unsaved scan review. Save it, or discard it with the scanner's own controls, before closing — closing now would discard it."
-              : "You have an unsaved preview. Confirm or cancel it before closing Bucky — closing now would discard it."}
+              ? "Save or discard the scan review before closing."
+              : "Confirm or cancel the pending preview before closing."}
           </p>
         )}
-        {scanMode ? (
-          <ScannerPage embedded onDirtyChange={handleScannerDirty} onExit={() => setOpen(false)} />
-        ) : status === "loading" || status === "idle" ? (
-          <p role="status">Loading your saved records…</p>
-        ) : status === "error" ? (
-          <div>
-            <p className="alert-error" role="alert">Bucky couldn't load your records. Nothing was changed.</p>
-            <button className="btn" type="button" onClick={() => void load()}>Retry</button>
-          </div>
-        ) : (
-          <BuckyPanel
-            profiles={profiles}
-            buckets={buckets}
-            transactions={transactions}
-            products={products}
-            sales={sales}
-            employees={employees}
-            onRecordsChanged={() => void load(true)}
-            onPendingActionChange={setHasPendingAction}
-            onNavigateAway={requestClose}
-            onScanRequest={requestScan}
-          />
-        )}
+        {scanMode && <ScannerPage embedded onDirtyChange={handleScannerDirty} onExit={() => { setScanMode(false); setOpen(false); }} />}
+        {!loaded && status !== "error" && <p role="status">Loading your saved records…</p>}
+        {status === "error" && <div><p className="alert-error" role="alert">Bucky couldn't load your records. Nothing was changed.</p><button className="btn" type="button" onClick={() => void load()}>Retry</button></div>}
+        {loaded && <div className="bucky-conversation-host" hidden={scanMode || status === "error"}>
+          <BuckyPanel profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
+            navigationKey={navigationKey} conversationRequest={requestReady ? request : null} active={open && !scanMode && status !== "error"} compact
+            onRecordsChanged={() => void load(true)} onPendingActionChange={setHasPendingAction}
+            onNavigateAway={requestClose} onScanRequest={requestScan} />
+        </div>}
       </dialog>
     </>
   );

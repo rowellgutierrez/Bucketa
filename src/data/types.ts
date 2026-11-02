@@ -61,6 +61,18 @@ export interface Product {
   name: string;
   /** Optional stock-keeping code; unique within the business when present. */
   sku: string | null;
+  /**
+   * Optional scannable barcode (EAN/UPC/Code 128 value, or an internal
+   * Bucketa-generated Code 128 value). Unique within the business when
+   * present, enforced like SKU. Absent on records saved before Smart
+   * Scan, so no migration is needed. Internal generated values are for
+   * store use only, not GS1 registration.
+   */
+  barcode?: string | null;
+  /** Optional product description; AI drafts stay editable (P1). */
+  description?: string | null;
+  /** Optional visually-supported colour label (P1 draft field). */
+  color?: string | null;
   /** Optional grouping label, e.g. "Drinks". */
   category: string | null;
   priceMinor: MinorUnits;
@@ -78,7 +90,7 @@ export interface Product {
   updatedAt: string;
 }
 
-export type SalaryFrequency = "weekly" | "biweekly" | "monthly" | "custom";
+export type SalaryFrequency = "hourly" | "daily" | "weekly" | "biweekly" | "monthly" | "custom";
 
 export interface Employee {
   id: string;

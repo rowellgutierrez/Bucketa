@@ -1,3 +1,4 @@
+import { PRODUCT_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_PROMPT, validateProductAnalysis } from "./productAnalysis.mjs";
 import { buildExtractionPrompt, EXTRACTION_JSON_SCHEMA } from "./extractSchema.mjs";
 import { BUCKY_ADVICE_JSON_SCHEMA, buildBuckyAdvicePrompt } from "./buckyAdvice.mjs";
 import { BUCKY_INTERPRET_JSON_SCHEMA, buildInterpretPrompt } from "./buckyInterpret.mjs";
@@ -316,4 +317,20 @@ export function buildMetaInterpretRequest({ text, context, apiKey }) {
 export async function sendMetaInterpret(request, fetchImpl = fetch, options = {}) {
   const json = await sendMetaEnvelope(request, fetchImpl, options);
   return parseMetaAdviceResponse(json);
+}
+
+/** Product analysis shares the existing image request envelope and transport. */
+export function buildMetaProductRequest({imageBase64, mediaType, apiKey}) {
+ const request = buildMetaRequest({imageBase64,mediaType,expectedCurrency:'PHP',recordType:'product photo',apiKey});
+ request.body.input[0].content[0].text = PRODUCT_ANALYSIS_PROMPT;
+ request.body.text.format = {type:'json_schema',name:'bucketa_product_analysis',strict:true,schema:PRODUCT_ANALYSIS_SCHEMA};
+ return request;
+}
+export async function sendMetaProduct(request, fetchImpl = fetch) {
+ const envelope = await sendMetaEnvelope(request, fetchImpl);
+ const text = extractTextFromResponse(envelope);
+ if(!text) throw metaDiagnosticError('invalid_envelope');
+ let parsed;
+ try { parsed = JSON.parse(text); } catch { throw metaDiagnosticError('invalid_json'); }
+ return validateProductAnalysis(parsed);
 }

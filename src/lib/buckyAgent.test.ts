@@ -157,8 +157,9 @@ test("grounded salary questions: per person, per month, and highest paid", () =>
   const highest = answerBuckyQuestion("Which employee received the highest recorded payments?", a);
   assert.match(highest.answer, /Roger/);
   const nobody = answerBuckyQuestion("How much did I pay Nobody this month?", a);
-  // Unknown names fall back to the recorded salary overview, never invented.
-  assert.equal(nobody.insufficientData, false);
+  // Unknown names require clarification rather than an unrelated salary total.
+  assert.equal(nobody.insufficientData, true);
+  assert.deepEqual(nobody.facts, []);
 });
 
 test("over-target savings report the true achievement and excess", () => {
@@ -392,7 +393,8 @@ test("uncategorised expenses and question fallbacks are honest about insufficien
   assert.equal(answerBuckyQuestion("How much POS revenue?", a).insufficientData, true);
   assert.equal(answerBuckyQuestion("How is my bucket goal?", a).insufficientData, true);
   const fallback = answerBuckyQuestion("Tell me something else entirely", a);
-  assert.equal(fallback.insufficientData, false);
+  assert.equal(fallback.insufficientData, true);
+  assert.deepEqual(fallback.facts, []);
   assert.match(fallback.answer, /expenses, cash flow/);
 });
 
@@ -418,3 +420,49 @@ test("model summary contains aggregated totals only, never raw record descriptio
   assert.ok(!JSON.stringify(summary).includes("Secret salary description"));
   assert.equal(summary.duplicateGroupCount, 0);
 });
+
+ test('English and Filipino totals use only the active profile and retain separate currencies', () => {
+  const a=analyze({transactions:[txn({type:'income',amountMinor:50000}),txn({amountMinor:12000}),txn({amountMinor:2500,currency:'USD'}),txn({profileId:'foreign',amountMinor:990000})],sales:[sale(),sale({id:'foreign-sale',profileId:'foreign',totalMinor:999999})]});
+  const en=answerBuckyQuestion('What are my expenses?',a);
+  const fil=answerBuckyQuestion('Magkano ang nagastos ko?',a);
+  assert.deepEqual(en.facts,fil.facts);
+  assert.equal(fil.facts.length,2);
+  assert.ok(fil.facts.some(f=>f.label.includes('PHP') && f.value.includes('120.00')));
+  assert.ok(fil.facts.some(f=>f.label.includes('USD') && f.value.includes('25.00')));
+  const sales=answerBuckyQuestion('Magkano ang benta ko?',a);
+  assert.deepEqual(sales.facts,answerBuckyQuestion('How much POS revenue?',a).facts);
+  assert.ok(sales.facts.some(f=>f.value.includes('300.00')));
+  const income=answerBuckyQuestion('What is my income?',a);
+  assert.ok(income.facts.some(f=>f.value.includes('500.00')));
+  assert.match(answerBuckyQuestion('Give me a cash flow overview',a).answer,/cash flow|income/i);
+ });
+ test('Unsupported dates, profitability, unknown goals, and product ranking do not invent figures',()=>{
+  const a=analyze({transactions:[txn()],buckets:[bucket()],sales:[sale()]});
+  for(const q of ['Magkano ang benta ko ngayong buwan?','What are my expenses today?','What are my expenses in May?','What are my expenses for the last 30 days?','What is my net income?','Which products sold best?','How much tax do I owe?','How is my Nonexistent savings goal doing?']) {
+   const answer=answerBuckyQuestion(q,a);assert.equal(answer.insufficientData,true,q);assert.deepEqual(answer.facts,[],q);
+  }
+ });
+ test('Filipino savings and inventory questions use the existing record-grounded analysis',()=>{
+  const a=analyze({transactions:[txn({type:'savings-deposit',bucketId:'b1',amountMinor:10000})],buckets:[bucket()],products:[product({stock:2})]});
+  assert.deepEqual(answerBuckyQuestion('Magkano ang ipon ko?',a).facts,answerBuckyQuestion('How are my savings?',a).facts);
+  assert.deepEqual(answerBuckyQuestion('Ano ang mababang imbentaryo?',a).facts,answerBuckyQuestion('What is low stock?',a).facts);
+ });
+
+ test('Highest-paid questions never compare unlike currencies',()=>{
+  const a=analyze({profile:profile({kind:'business'}),transactions:[txn({category:'Salaries',description:'Salary payment — Roger',amountMinor:100000}),txn({category:'Salaries',description:'Salary payment — Maria',amountMinor:10000,currency:'USD'})]});
+  const answer=answerBuckyQuestion('Which employee received the highest recorded payments?',a);
+  assert.equal(answer.insufficientData,true);assert.deepEqual(answer.facts,[]);assert.match(answer.answer,/different currencies/);
+ });
+
+ test('Repeated employee names require clarification, not a combined person total',()=>{
+  const a=analyze({employees:[{id:'e1',profileId:'p1',name:'Roger',role:'Clerk',status:'active',createdAt:stamp,updatedAt:stamp},{id:'e2',profileId:'p1',name:'Roger',role:'Manager',status:'active',createdAt:stamp,updatedAt:stamp}],transactions:[txn({category:'Salaries',description:'Salary payment — Roger',relatedId:'e1'}),txn({category:'Bonuses',description:'Bonus payment — Roger',relatedId:'e2'})]});
+  const answer=answerBuckyQuestion('How much did I pay Roger?',a);
+  assert.equal(answer.insufficientData,true);assert.deepEqual(answer.facts,[]);assert.match(answer.answer,/More than one employee/);
+ });
+
+ test('Named employee payment types stay distinct and configured-rate queries do not report payments as rates',()=>{
+  const a=analyze({transactions:[txn({category:'Salaries',description:'Salary payment — Maria',amountMinor:100000}),txn({category:'Bonuses',description:'Bonus payment — Maria',amountMinor:5000})]});
+  const bonus=answerBuckyQuestion('How much did I pay Maria in bonuses?',a);
+  assert.ok(bonus.facts.some(f=>f.value.includes('50.00')));assert.ok(!bonus.facts.some(f=>f.value.includes('1,050')));
+  assert.equal(answerBuckyQuestion('What is Maria salary rate?',a).insufficientData,true);
+ });

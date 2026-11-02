@@ -1,5 +1,5 @@
-import { historyHref, parseHistoryScope, personalHrefForProfile, profileIdFromHash, selectHistory, transactionsHrefForProfile, type HistoryScope } from "./historyScope.ts";
-import type { Profile, Transaction, TransactionType } from "../data/types.ts";
+import { buildActivity, historyHref, parseHistoryScope, personalHrefForProfile, profileIdFromHash, selectHistory, transactionsHrefForProfile, type HistoryScope } from "./historyScope.ts";
+import type { Profile, Sale, Transaction, TransactionType } from "../data/types.ts";
 
 const assert: { equal(a: unknown, b: unknown): void; deepEqual(a: unknown, b: unknown): void; ok(a: unknown): void } = (await import("node:" + "assert/strict")).default;
 const test: (name: string, body: () => void) => void = (await import("node:" + "test")).default;
@@ -68,3 +68,17 @@ test("hashes without an explicit profile keep the default selection", () => {
   assert.equal(profileIdFromHash("#/transactions?profileId=a&profileId=b"), null);
   assert.equal(profileIdFromHash("#/transactions?profileId=a&extra=1"), null);
 });
+
+ test('Completed POS sales project once into read-only activity without changing cash-flow records',()=>{
+  const sale:Sale={id:'s1',profileId:'business',currency:'PHP',items:[],totalMinor:25000,createdAt:'2026-11-02T10:00:00Z',updatedAt:'2026-11-02T10:00:00Z',receiptNumber:'QA-001'};
+  const original=JSON.stringify(records);
+  const linked={...record('legacy-sale','business','sale','2026-11-02'),origin:'pos' as const,relatedId:'s1'};
+  const activity=buildActivity([...records,linked],[sale,sale],profiles);
+  const projected=activity.filter(t=>t.relatedId==='s1');assert.equal(projected.length,1);assert.equal(projected[0].type,'sale');assert.equal(projected[0].amountMinor,25000);assert.equal(projected[0].origin,'pos');
+  assert.equal(JSON.stringify(records),original);
+  assert.deepEqual(activity.filter(t=>t.type==='income'||t.type==='expense'),records.filter(t=>t.type==='income'||t.type==='expense'));
+  assert.equal(selectHistory(activity,profiles,{...context('business','business'),from:'2026-11-02',to:'2026-11-02'}).records.length,1);
+  assert.equal(selectHistory(activity,profiles,context('personal')).records.some(t=>t.origin==='pos'),false);
+  assert.equal(buildActivity([], [{...sale,profileId:'deleted'}],profiles).length,0);
+  assert.equal(buildActivity([], [{...sale,currency:'USD'}],profiles).length,0);
+ });

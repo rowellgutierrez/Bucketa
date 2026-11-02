@@ -51,7 +51,7 @@ export default function Shell({ routes, active, onNavigate, dark, onToggleTheme,
         <main id="main-content" className="content" tabIndex={-1}>{children}</main>
       </div>
       <dialog ref={dialog} className="more-sheet" aria-labelledby="more-heading" onCancel={() => setMoreOpen(false)} onClose={() => setMoreOpen(false)}><div className="sheet-heading"><h2 id="more-heading">Your workspace</h2><button className="btn ghost" type="button" onClick={() => setMoreOpen(false)} aria-label="Close navigation"><Icon name="close" /></button></div><nav aria-label="More pages">{moreRoutes.map((r) => <button key={r.id} type="button" className={r.id === active ? "sheet-link on" : "sheet-link"} aria-current={r.id === active ? "page" : undefined} onClick={() => go(r.id)}><Icon name={icons[r.id] ?? "dashboard"} /><span>{labels[r.id] ?? r.label}</span>{isPlanned(r) && <span className="planned-tag">Planned</span>}</button>)}</nav></dialog>
-      {active !== "dashboard" && <BuckyDock />}
+      <BuckyDock hideLauncher={active === "dashboard"} />
       <nav className="bottombar" aria-label="Mobile">{bottomRoutes.map((r) => <button key={r.id} type="button" className={r.id === active ? "tab on" : "tab"} aria-current={r.id === active ? "page" : undefined} onClick={() => go(r.id)}><Icon name={icons[r.id] ?? "dashboard"} />{r.shortLabel}</button>)}<button ref={moreButton} type="button" className={!BOTTOM_IDS.includes(active) ? "tab on" : "tab"} aria-expanded={moreOpen} aria-haspopup="dialog" onClick={() => setMoreOpen(true)}><Icon name="more" />More</button></nav>
     </div>
   );

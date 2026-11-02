@@ -23,6 +23,7 @@ import {
   paymentsForEmployee,
   summarizeEmployeePayments,
   COMPENSATION_LABELS,
+  calculatePaymentMinor,
   type CompensationType,
 } from "../lib/employees";
 import { onRecordsChanged } from "../lib/dataChange";
@@ -54,10 +55,12 @@ function monthLabel(month: string): string {
 }
 
 const FREQUENCIES: { value: SalaryFrequency; label: string }[] = [
+  { value: "hourly", label: "Hourly" },
+  { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
   { value: "biweekly", label: "Every 2 weeks" },
   { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom" },
+  { value: "custom", label: "Custom / per-project" },
 ];
 
 /**
@@ -100,14 +103,49 @@ export default function EmployeesPage() {
   const [paymentDate, setPaymentDate] = useState(todayInputValue());
   const [paymentNote, setPaymentNote] = useState("");
   const [paymentError, setPaymentError] = useState("");
+  const [paymentBasis, setPaymentBasis] = useState<SalaryFrequency>("custom");
+  const [paymentRate, setPaymentRate] = useState("");
+  const [paymentUnits, setPaymentUnits] = useState("");
   const [pendingPayment, setPendingPayment] = useState<Transaction | null>(null);
   const [savingPayment, setSavingPayment] = useState(false);
   const executedPaymentIds = useRef<Set<string>>(new Set());
+
+  function cancelPayment() {
+    if (savingPayment) return;
+    if ((paymentAmount.trim() || paymentNote.trim() || paymentRate.trim() || paymentUnits.trim() || pendingPayment) &&
+        !window.confirm("Discard this unsaved payment? Nothing has been recorded.")) return;
+    setPendingPayment(null);
+    setPaymentEmployeeId("");
+    setPaymentType("salary");
+    setPaymentAmount("");
+    setPaymentDate(todayInputValue());
+    setPaymentNote("");
+    setPaymentBasis("custom");
+    setPaymentRate("");
+    setPaymentUnits("");
+    setPaymentError("");
+  }
 
   // History selection
   const [historyEmployeeId, setHistoryEmployeeId] = useState("");
 
   const business = businesses.find((b) => b.id === businessId) ?? businesses[0];
+  const unitLabel = paymentBasis === "hourly" ? "hours" : paymentBasis === "daily" ? "days" : paymentBasis === "weekly" ? "weeks" : paymentBasis === "biweekly" ? "2-week periods" : "months";
+  let calculatedMinor: number | null = null;
+  if (business && paymentBasis !== "custom" && paymentRate.trim() && paymentUnits.trim()) {
+    try { calculatedMinor = calculatePaymentMinor(parseAmountToMinorUnits(paymentRate, business.currency), paymentUnits); } catch { /* Validate on submission, not before interaction. */ }
+  }
+
+  function selectPaymentEmployee(id: string) {
+    if (savingPayment) return false;
+    if ((paymentAmount.trim() || paymentNote.trim() || paymentUnits.trim() || pendingPayment) && !window.confirm("Switch employee and discard this unsaved payment?")) return false;
+    const employee = employees.find(e => e.id === id);
+    setPaymentEmployeeId(id);
+    setPaymentBasis(employee?.salaryFrequency ?? "custom");
+    setPaymentRate(employee?.salaryRateMinor && business && (!employee.currency || employee.currency === business.currency) ? minorUnitsToAmountInput(employee.salaryRateMinor, business.currency) : "");
+    setPaymentUnits("");setPaymentAmount("");setPaymentNote("");setPaymentError("");setPendingPayment(null);
+    return true;
+  }
 
   async function loadBusinessData(forId: string) {
     const [emps, txns] = await Promise.all([
@@ -155,6 +193,9 @@ export default function EmployeesPage() {
   }, [businessId]);
 
   async function switchBusiness(id: string) {
+    if (savingPayment) return;
+    if ((paymentAmount.trim() || paymentNote.trim() || paymentUnits.trim() || pendingPayment) && !window.confirm("Switch business and discard this unsaved payment?")) return;
+    setPaymentEmployeeId("");setPaymentBasis("custom");setPaymentRate("");setPaymentUnits("");setPaymentAmount("");setPaymentNote("");setPaymentError("");
     setBusinessId(id);
     setNotice("");
     setPageError("");
@@ -295,7 +336,9 @@ export default function EmployeesPage() {
     }
     let amountMinor: number;
     try {
-      amountMinor = parseAmountToMinorUnits(paymentAmount, business.currency);
+      if (paymentBasis !== "custom") calculatePaymentMinor(parseAmountToMinorUnits(paymentRate, business.currency), paymentUnits);
+      if (paymentBasis === "custom" && !paymentNote.trim()) throw new Error("Describe this custom payment.");
+      amountMinor = paymentAmount.trim() ? parseAmountToMinorUnits(paymentAmount, business.currency) : calculatedMinor ?? 0;
       if (amountMinor <= 0) throw new Error("Amount must be greater than zero.");
     } catch (error) {
       setPaymentError(errorMessage(error));
@@ -312,7 +355,7 @@ export default function EmployeesPage() {
         amountMinor,
         currency: business.currency,
         date: paymentDate,
-        note: paymentNote,
+        note: [paymentBasis !== "custom" ? `${formatMoney(parseAmountToMinorUnits(paymentRate, business.currency), business.currency)} × ${paymentUnits} ${unitLabel} = ${formatMoney(calculatedMinor!, business.currency)}${amountMinor !== calculatedMinor ? `; adjusted to ${formatMoney(amountMinor, business.currency)}` : ""}` : "", paymentNote].filter(Boolean).join(" · "),
         timestamp: nowIso(),
       }),
     );
@@ -336,6 +379,7 @@ export default function EmployeesPage() {
       );
       setPendingPayment(null);
       setPaymentAmount("");
+      setPaymentUnits("");
       setPaymentNote("");
       setPaymentError("");
       if (pendingPayment.relatedId) setHistoryEmployeeId(pendingPayment.relatedId);
@@ -471,12 +515,12 @@ export default function EmployeesPage() {
                 <input id="emp-contact" className="input" value={contact} onChange={(e) => setContact(e.target.value)} autoComplete="off" placeholder="Phone or email" />
               </div>
               <div className="field">
-                <label htmlFor="emp-rate">Salary rate in {business.currency} (optional)</label>
+                <label htmlFor="emp-rate">Rate in {business.currency} (optional)</label>
                 <input id="emp-rate" className="input" inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="e.g. 20000" />
                 <p className="field-hint">A rate is the agreed pay — it is never recorded as money paid. Payments are recorded separately below.</p>
               </div>
               <div className="field">
-                <label htmlFor="emp-frequency">Salary frequency (optional)</label>
+                <label htmlFor="emp-frequency">Pay basis (optional)</label>
                 <select id="emp-frequency" className="input" value={frequency} onChange={(e) => setFrequency(e.target.value as SalaryFrequency | "")}>
                   <option value="">Not set</option>
                   {FREQUENCIES.map((f) => (
@@ -501,11 +545,11 @@ export default function EmployeesPage() {
             {employees.length === 0 ? (
               <p className="muted">No employees yet for {business.name}. Add your first employee to start recording payments.</p>
             ) : (
-              <ul className="bucky-insights">
+              <div className="employee-table-wrap"><table className="employee-table"><caption className="sr-only">Employee records and recorded payments for {business.name}</caption><thead><tr><th scope="col">Employee</th><th scope="col">Configured rate</th><th scope="col">Recorded payments</th><th scope="col">Actions</th></tr></thead><tbody>
                 {employees.map((employee) => {
                   const summary = summaryFor(employee.id);
                   return (
-                    <li key={employee.id} className="bucky-insight bucky-info">
+                    <tr key={employee.id}><td data-label="Employee">
                       <strong>
                         {employee.name}
                         {employee.status !== "active" ? " (archived)" : ""}
@@ -515,15 +559,17 @@ export default function EmployeesPage() {
                         {employee.startDate ? ` · started ${formatDate(employee.startDate)}` : ""}
                         {employee.contact ? ` · ${employee.contact}` : ""}
                       </p>
+                      </td><td data-label="Configured rate">
                       {employee.salaryRateMinor ? (
                         <p className="muted">
                           Configured salary rate: {formatMoney(employee.salaryRateMinor, employee.currency ?? business.currency)}
                           {employee.salaryFrequency ? ` / ${FREQUENCIES.find((f) => f.value === employee.salaryFrequency)?.label.toLowerCase()}` : ""}
                           {(summary?.paymentCount ?? 0) > 0
-                            ? " — this is the agreed rate, separate from the recorded payments below"
-                            : " — this agreed rate is not a recorded payment; no payments recorded yet"}
+                            ? " — agreed rate"
+                            : " — no payments recorded"}
                         </p>
-                      ) : null}
+                      ) : <span className="muted">Not configured</span>}
+                      </td><td data-label="Recorded payments">
                       <dl className="bucky-evidence">
                         <div><dt>Payments</dt><dd>{summary?.paymentCount ?? 0}</dd></div>
                         {(summary?.totalsByCurrency ?? []).map((t) => (
@@ -536,15 +582,14 @@ export default function EmployeesPage() {
                           </div>
                         )}
                       </dl>
+                      </td><td data-label="Actions">
                       <div className="row-actions">
                         <button className="btn ghost small" type="button" onClick={() => startEdit(employee)}>Edit</button>
                         <button
                           className="btn ghost small"
                           type="button"
                           onClick={() => {
-                            setPaymentEmployeeId(employee.id);
-                            setHistoryEmployeeId(employee.id);
-                            setPendingPayment(null);
+                            if (selectPaymentEmployee(employee.id)) setHistoryEmployeeId(employee.id);
                           }}
                         >
                           Record payment
@@ -556,20 +601,22 @@ export default function EmployeesPage() {
                           {employee.status === "active" ? "Archive" : "Restore"}
                         </button>
                       </div>
-                    </li>
+                    </td></tr>
                   );
                 })}
-              </ul>
+              </tbody></table></div>
             )}
           </section>
 
           {employees.length > 0 && (
             <section className="panel" aria-labelledby="payment-heading">
               <div className="panel-head"><h2 id="payment-heading">Record a payment</h2></div>
-              <form onSubmit={onPreviewPayment} noValidate>
+              <form className="employee-payment-form" onSubmit={onPreviewPayment} noValidate>
+                <fieldset disabled={savingPayment}>
+                <legend className="sr-only">Payment details</legend>
                 <div className="field">
                   <label htmlFor="pay-employee">Employee</label>
-                  <select id="pay-employee" className="input" value={paymentEmployeeId} onChange={(e) => { setPaymentEmployeeId(e.target.value); setPendingPayment(null); }}>
+                  <select id="pay-employee" className="input" value={paymentEmployeeId} onChange={(e) => selectPaymentEmployee(e.target.value)}>
                     <option value="">Choose an employee…</option>
                     {employees.map((e) => (
                       <option key={e.id} value={e.id}>{employeeOptionLabel(e, employees)}{e.status !== "active" ? " (archived)" : ""}</option>
@@ -585,21 +632,34 @@ export default function EmployeesPage() {
                   </select>
                 </div>
                 <div className="field">
-                  <label htmlFor="pay-amount">Amount in {business.currency}</label>
-                  <input id="pay-amount" className="input" inputMode="decimal" value={paymentAmount} onChange={(e) => { setPaymentAmount(e.target.value); setPendingPayment(null); }} placeholder="e.g. 1000" />
+                  <label htmlFor="pay-basis">Pay basis</label>
+                  <select id="pay-basis" className="input" value={paymentBasis} onChange={e => {setPaymentBasis(e.target.value as SalaryFrequency);setPaymentUnits("");setPaymentAmount("");setPendingPayment(null);setPaymentError("");}}>
+                    {FREQUENCIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  </select>
+                </div>
+                {paymentBasis !== "custom" && <>
+                  <div className="field"><label htmlFor="pay-rate">Rate in {business.currency}</label><input id="pay-rate" className="input" inputMode="decimal" value={paymentRate} onChange={e => {setPaymentRate(e.target.value);setPendingPayment(null);}} /></div>
+                  <div className="field"><label htmlFor="pay-units">Number of {unitLabel} worked</label><input id="pay-units" className="input" inputMode="decimal" value={paymentUnits} onChange={e => {setPaymentUnits(e.target.value);setPendingPayment(null);}} placeholder="Enter actual units" /></div>
+                  {calculatedMinor !== null && <p className="payment-calculation" role="status">{formatMoney(parseAmountToMinorUnits(paymentRate, business.currency), business.currency)} × {paymentUnits} {unitLabel} = <strong>{formatMoney(calculatedMinor, business.currency)}</strong><span className="field-hint">Rounded to the currency’s smallest unit. No payment is saved yet.</span></p>}
+                </>}
+                <div className="field">
+                  <label htmlFor="pay-amount">{paymentBasis === "custom" ? "Payment amount" : "Override amount (optional)"} in {business.currency}</label>
+                  <input id="pay-amount" className="input" inputMode="decimal" value={paymentAmount} onChange={(e) => { setPaymentAmount(e.target.value); setPendingPayment(null); }} placeholder={calculatedMinor !== null ? minorUnitsToAmountInput(calculatedMinor,business.currency) : "Enter amount"} />
                 </div>
                 <div className="field">
                   <label htmlFor="pay-date">Date</label>
                   <input id="pay-date" className="input" type="date" value={paymentDate} onChange={(e) => { setPaymentDate(e.target.value); setPendingPayment(null); }} />
                 </div>
                 <div className="field">
-                  <label htmlFor="pay-note">Notes (optional)</label>
+                  <label htmlFor="pay-note">{paymentBasis === "custom" ? "Payment description" : "Notes (optional)"}</label>
                   <input id="pay-note" className="input" value={paymentNote} onChange={(e) => { setPaymentNote(e.target.value); setPendingPayment(null); }} autoComplete="off" placeholder="e.g. November payroll" />
                 </div>
                 {paymentError && !pendingPayment && <p className="alert-error" role="alert">{paymentError}</p>}
                 <div className="row-actions">
-                  <button className="btn" type="submit">Preview payment</button>
+                  <button className="btn" type="submit" disabled={savingPayment}>Preview payment</button>
+                  <button className="btn ghost" type="button" onClick={cancelPayment} disabled={savingPayment}>Cancel</button>
                 </div>
+                </fieldset>
               </form>
 
               {pendingPayment && (

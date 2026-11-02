@@ -19,6 +19,7 @@
   --bk-shadow:0 1px 2px rgba(40,35,38,.06),0 8px 24px -12px rgba(40,35,38,.18);
   --bk-shadow-lg:0 2px 4px rgba(40,35,38,.06),0 20px 44px -16px rgba(40,35,38,.28);
   --bk-space:8px;
+  --bk-card-padding:20px; --bk-section-gap:16px; --bk-form-gap:12px;
 }
 [data-theme="dark"]{
   color-scheme:dark;

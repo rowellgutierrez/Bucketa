@@ -99,9 +99,35 @@ export function validateTransaction(r: Transaction): Transaction {
   return r;
 }
 
+/** Barcodes compare trimmed and case-insensitively, like SKUs. */
+export function normalizeBarcode(barcode: string | null | undefined): string {
+  return (barcode ?? "").trim().toUpperCase();
+}
+
+const BARCODE_PATTERN = /^[A-Z0-9][A-Z0-9\-_]*$/;
+
+export function assertBarcode(value: unknown): string {
+  if (typeof value !== "string") fail("barcode must be text.");
+  const normalized = normalizeBarcode(value);
+  if (normalized.length < 4 || normalized.length > 48 || !BARCODE_PATTERN.test(normalized)) {
+    fail("barcode must be 4-48 letters, numbers, hyphens, or underscores.");
+  }
+  if (/^\d+$/.test(normalized)) {
+    if (![8, 12, 13].includes(normalized.length)) fail("Numeric barcodes must be EAN-8, UPC-A, or EAN-13.");
+    const digits = [...normalized].map(Number);
+    const check = digits.pop()!;
+    const sum = digits.reverse().reduce((total, digit, index) => total + digit * (index % 2 === 0 ? 3 : 1), 0);
+    if ((10 - sum % 10) % 10 !== check) fail("EAN/UPC barcode checksum is invalid.");
+  }
+  return normalized;
+}
+
 export function validateProduct(r: Product): Product {
   assertName(r.name);
   if (r.sku !== null && r.sku !== undefined) assertName(r.sku, "sku");
+  if (r.barcode !== null && r.barcode !== undefined) assertBarcode(r.barcode);
+  if (r.description !== null && r.description !== undefined) assertName(r.description, "description");
+  if (r.color !== null && r.color !== undefined) assertName(r.color, "color");
   if (r.category !== null && r.category !== undefined) assertName(r.category, "category");
   if (!r.profileId) fail("product profileId is required.");
   assertMinorUnits(r.priceMinor, "priceMinor");
@@ -141,6 +167,22 @@ export function findSkuConflict(
   );
 }
 
+/** Same-business barcode conflict, or null. Barcode-less products never conflict. */
+export function findBarcodeConflict(
+  products: Product[],
+  profileId: string,
+  barcode: string | null | undefined,
+  excludeId = "",
+): Product | null {
+  const wanted = normalizeBarcode(barcode);
+  if (!wanted) return null;
+  return (
+    products.find(
+      (p) => p.id !== excludeId && p.profileId === profileId && normalizeBarcode(p.barcode) === wanted,
+    ) ?? null
+  );
+}
+
 export function validateEmployee(r: Employee): Employee {
   assertName(r.name);
   if (!r.profileId) fail("employee profileId is required.");
@@ -155,7 +197,7 @@ export function validateEmployee(r: Employee): Employee {
     assertMinorUnits(r.salaryRateMinor, "salaryRateMinor");
   }
   if (r.salaryFrequency !== undefined && r.salaryFrequency !== null) {
-    if (!["weekly", "biweekly", "monthly", "custom"].includes(r.salaryFrequency)) {
+    if (!["hourly", "daily", "weekly", "biweekly", "monthly", "custom"].includes(r.salaryFrequency)) {
       fail("employee salaryFrequency is invalid.");
     }
   }

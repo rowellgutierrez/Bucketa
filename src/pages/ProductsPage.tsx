@@ -1,3 +1,4 @@
+import ProductPhotoReview from "../components/ProductPhotoReview";
 import Icon from "../components/ui/Icon";
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
@@ -16,6 +17,10 @@ import {
   parseAmountToMinorUnits,
 } from "../lib/currency";
 import { onRecordsChanged } from "../lib/dataChange";
+import { findBarcodeConflict, normalizeBarcode } from "../data/validation";
+import { findProductByBarcode, generateInternalBarcode } from "../lib/barcode";
+import BarcodeScanner from "../components/BarcodeScanner";
+import BarcodeLabel from "../components/BarcodeLabel";
 
 type Status = "loading" | "ready" | "error";
 
@@ -46,6 +51,12 @@ export default function ProductsPage() {
   const [cost, setCost] = useState("");
   const [openingStock, setOpeningStock] = useState("0");
   const [sku, setSku] = useState("");
+  const [photoOpen, setPhotoOpen] = useState(false);
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState("");
+  const [barcode, setBarcode] = useState("");
+  const [barcodeScanTarget, setBarcodeScanTarget] = useState<"form" | "lookup" | null>(null);
+  const [labelProduct, setLabelProduct] = useState<Product | null>(null);
   const [category, setCategory] = useState("");
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -73,6 +84,7 @@ export default function ProductsPage() {
       return (
         p.name.toLowerCase().includes(query) ||
         (p.sku ?? "").toLowerCase().includes(query) ||
+        (p.barcode ?? "").toLowerCase().includes(query) ||
         (p.category ?? "").toLowerCase().includes(query)
       );
     });
@@ -134,6 +146,8 @@ export default function ProductsPage() {
 
   async function switchBusiness(id: string) {
     if (id === profileId) return;
+    setPhotoOpen(false);
+    setBarcodeScanTarget(null); setLabelProduct(null);
     setProfileId(id);
     setNotice("");
     setPageError("");
@@ -155,8 +169,37 @@ export default function ProductsPage() {
     setCost("");
     setOpeningStock("0");
     setSku("");
+    setBarcode("");
+    setDescription(""); setColor("");
     setCategory("");
     setFormError("");
+  }
+
+  function handleBarcodeScanned(code: string) {
+    if (barcodeScanTarget === "form") {
+      setBarcode(code);
+      setBarcodeScanTarget(null);
+      return;
+    }
+    if (!activeProfile) return;
+    const found = findProductByBarcode(products, activeProfile.id, code);
+    setBarcodeScanTarget(null);
+    if (found) {
+      setSearch(code);
+      setNotice(`Found “${found.name}” for barcode ${code}.`);
+    } else {
+      startCreate(); setBarcode(code); setNotice("New barcode — review product details before saving.");
+    }
+  }
+
+  function generateBarcode() {
+    if (!activeProfile) return;
+    try {
+      setBarcode(generateInternalBarcode(products, activeProfile.id));
+      setFormError("");
+    } catch (error) {
+      setFormError(errorMessage(error));
+    }
   }
 
   function startCreate() {
@@ -181,6 +224,8 @@ export default function ProductsPage() {
       setCost("");
     }
     setSku(product.sku ?? "");
+    setBarcode(product.barcode ?? "");
+    setDescription(product.description ?? ""); setColor(product.color ?? "");
     setCategory(product.category ?? "");
     setFormError("");
     setNotice("");
@@ -231,6 +276,14 @@ export default function ProductsPage() {
       );
       return;
     }
+    const trimmedBarcode = barcode.trim() ? normalizeBarcode(barcode) : null;
+    const barcodeConflict = findBarcodeConflict(products, activeProfile.id, trimmedBarcode, editingId);
+    if (barcodeConflict) {
+      setFormError(
+        `Barcode “${trimmedBarcode}” is already used by “${barcodeConflict.name}” in this business. Scan or generate a different one.`,
+      );
+      return;
+    }
     const editing = products.find((p) => p.id === editingId);
     let stock = 0;
     if (!editing) {
@@ -250,6 +303,7 @@ export default function ProductsPage() {
         const updated = await productsRepo.update(editing.id, {
           name: trimmedName,
           sku: trimmedSku,
+          barcode: trimmedBarcode, description: description.trim() || null, color: color.trim() || null,
           category: category.trim() || null,
           priceMinor,
           costMinor,
@@ -260,7 +314,7 @@ export default function ProductsPage() {
         const stamp = nowIso();
         const product: Product = {
           id: newId(), profileId: activeProfile.id, name: trimmedName,
-          sku: trimmedSku, category: category.trim() || null,
+          sku: trimmedSku, barcode: trimmedBarcode, description: description.trim() || null, color: color.trim() || null, category: category.trim() || null,
           priceMinor, costMinor, currency: activeProfile.currency,
           stock, status: "active", createdAt: stamp, updatedAt: stamp,
         };
@@ -324,7 +378,13 @@ export default function ProductsPage() {
         eyebrow="BUSINESS TOOLS"
         title="Products & Inventory"
         description="Manage your catalog, prices, and available stock."
-        actions={activeProfile ? <button className="btn" type="button" onClick={startCreate}>Add product</button> : undefined}
+        actions={activeProfile ? (
+          <div className="row-actions">
+            <button className="btn ghost" type="button" onClick={() => { setPhotoOpen(true); setBarcodeScanTarget(null); }}>Product photo</button>
+            <button className="btn ghost" type="button" onClick={() => setBarcodeScanTarget("lookup")}>Smart Scan</button>
+            <button className="btn" type="button" onClick={startCreate}>Add product</button>
+          </div>
+        ) : undefined}
       />
 
       {status === "loading" && <div className="card loading-state" role="status">Loading products…</div>}
@@ -384,6 +444,27 @@ export default function ProductsPage() {
                 {notice && <p className="notice dash-alert" role="status">{notice}</p>}
                 {pageError && <p className="alert-error dash-alert" role="alert">{pageError}</p>}
 
+                {photoOpen && <ProductPhotoReview key={activeProfile?.id} onClose={() => setPhotoOpen(false)} onApply={draft => {
+                  if (!activeProfile) return;
+                  try {
+                    const generated = generateInternalBarcode(products, activeProfile.id);
+                    startCreate(); setName(draft.name ?? ''); setCategory(draft.category ?? ''); setDescription(draft.description ?? ''); setColor(draft.color ?? '');
+                    setBarcode(generated); setPhotoOpen(false);
+                    setNotice('Reviewed photo draft. Enter price and stock, then save to confirm registration.');
+                  } catch (error) { setPageError(errorMessage(error)); }
+                }} />}
+                {barcodeScanTarget && (
+                  <div className="card">
+                    <h2 className="inline-form-title">{barcodeScanTarget === "form" ? "Scan product barcode" : "Smart Scan — find product"}</h2>
+                    <BarcodeScanner
+                      onDetected={handleBarcodeScanned}
+                      onClose={() => setBarcodeScanTarget(null)}
+                      hint={barcodeScanTarget === "form" ? "Scan the product's existing barcode, or type it below." : "Scan a saved barcode to find its product in this business."}
+                    />
+                  </div>
+                )}
+                {labelProduct && <BarcodeLabel product={labelProduct} onClose={() => setLabelProduct(null)} />}
+
                 {showForm && (
                   <form className="card inline-form" onSubmit={onSaveProduct} noValidate>
                     <h2 className="inline-form-title">
@@ -395,6 +476,8 @@ export default function ProductsPage() {
                         Update stock on the product when the count changes.
                       </p>
                     )}
+                    <div className="field"><label htmlFor="product-description">Description</label><textarea id="product-description" className="input" value={description} onChange={e => setDescription(e.target.value)} /></div>
+                    <div className="field"><label htmlFor="product-color">Color / visible attributes</label><input id="product-color" className="input" value={color} onChange={e => setColor(e.target.value)} /></div>
                     <div className="form-row">
                       <div className="field">
                         <label htmlFor="product-name">Product name</label>
@@ -437,6 +520,24 @@ export default function ProductsPage() {
                           placeholder="e.g. RICE-1"
                           autoComplete="off"
                         />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="product-barcode">Barcode (optional)</label>
+                        <input
+                          id="product-barcode"
+                          className="input"
+                          type="text"
+                          value={barcode}
+                          onChange={(e) => setBarcode(e.target.value)}
+                          placeholder="Existing EAN/UPC/Code 128, or generate"
+                          autoComplete="off"
+                          autoCapitalize="characters"
+                        />
+                        <div className="row-actions">
+                          <button className="btn ghost small" type="button" onClick={generateBarcode}>Generate Code 128</button>
+                          <button className="btn ghost small" type="button" onClick={() => setBarcodeScanTarget("form")}>Scan barcode</button>
+                        </div>
+                        <p className="field-hint">Generated BKT- codes are internal store codes, not GS1 barcodes. Must be unique in this business.</p>
                       </div>
                     </div>
                     <div className="form-row">
@@ -575,17 +676,16 @@ export default function ProductsPage() {
                             <strong>{product.name}</strong>
                             <p className="muted bucket-meta">
                               {[product.category, product.sku ? `SKU ${product.sku}` : null,
+                                product.barcode ? `Barcode ${product.barcode}` : "No barcode",
                                 product.costMinor !== null ? `Cost ${formatMoney(product.costMinor, product.currency)}` : null,
                                 isArchived(product) ? "Archived" : null].filter(Boolean).join(" · ")}
                             </p>
                           </div>
                           <div className="inventory-product-price">
-                            <strong>{formatMoney(product.priceMinor, product.currency)}</strong>
-                            <span>Sale price</span>
+                            <div className="inventory-price-stock"><strong>{formatMoney(product.priceMinor, product.currency)}</strong>
+                              <span className={product.stock === 0 ? "stock-status stock-empty" : "stock-status"}>{product.stock === 0 ? "Out of stock" : `${product.stock} in stock`}</span>
+                            </div><span>Sale price</span>
                           </div>
-                          <span className={product.stock === 0 ? "stock-status stock-empty" : "stock-status"}>
-                            {product.stock === 0 ? "Out of stock" : `${product.stock} in stock`}
-                          </span>
                           <div className="row-actions">
                             {!isArchived(product) && (
                               <>
@@ -608,6 +708,21 @@ export default function ProductsPage() {
                                 >
                                   Update stock
                                 </button>
+                                {product.barcode ? (
+                                  <button className="btn ghost small" type="button" onClick={() => setLabelProduct(product)}>Print label</button>
+                                ) : (
+                                  <button
+                                    className="btn ghost small"
+                                    type="button"
+                                    onClick={() => {
+                                      startEdit(product);
+                                      try { setBarcode(generateInternalBarcode(products, product.profileId)); }
+                                      catch (error) { setFormError(errorMessage(error)); }
+                                    }}
+                                  >
+                                    Generate barcode
+                                  </button>
+                                )}
                               </>
                             )}
                             <button

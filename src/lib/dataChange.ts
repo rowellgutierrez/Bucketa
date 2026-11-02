@@ -10,6 +10,8 @@
  */
 
 export interface RecordsChangedDetail {
+  /** Stable committed record ID, including POS sale records. */
+  recordId?: string;
   /** Profile whose records changed, when known. */
   profileId?: string;
   /** The persisted transaction ID, when a single record was saved. */

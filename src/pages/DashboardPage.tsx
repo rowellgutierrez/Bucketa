@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { bucketsRepo, employeesRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types";
-import BuckyPanel from "../components/BuckyPanel";
+import HomeBucky from "../components/HomeBucky";
 import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
 import { formatMoney } from "../lib/currency";
@@ -14,7 +14,7 @@ import {
 import Card, { MetricCard } from "../components/ui/Card";
 import PageHeader from "../components/ui/PageHeader";
 import Icon from "../components/ui/Icon";
-import { historyHref } from "../lib/historyScope";
+import { buildActivity, selectHistory, historyHref } from "../lib/historyScope";
 import { onRecordsChanged } from "../lib/dataChange";
 import TransactionRow from "../components/TransactionRow";
 
@@ -79,7 +79,6 @@ export default function DashboardPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [chartCurrency, setChartCurrency] = useState("");
-
   async function load() {
     setStatus("loading");
     setLoadError("");
@@ -180,18 +179,20 @@ export default function DashboardPage() {
     return categories.map((item) => ({ ...item, pct: total > 0 ? item.total / total * 100 : 0 }));
   }, [categories]);
   const maxMonthly = Math.max(1, ...monthly.flatMap((m) => [m.income, m.expense]));
+  const activity = useMemo(() => buildActivity(transactions, sales, profiles), [transactions, sales, profiles]);
+  const scopedActivity = useMemo(() => selectHistory(activity, profiles, {scope:view,profileId:businessId,from:range.from,to:range.to}).records, [activity,profiles,view,businessId,range.from,range.to]);
   const recent = useMemo(
     () =>
-      [...scoped]
+      [...scopedActivity]
         .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
         .slice(0, 3),
-    [scoped],
+    [scopedActivity],
   );
 
   const profileName = (id: string) => profiles.find((p) => p.id === id)?.name ?? "Unknown";
   const bucketName = (id: string | null) =>
     id ? (buckets.find((b) => b.id === id)?.name ?? "Unknown bucket") : null;
-  const hasAnyTransactions = transactions.length > 0;
+  const hasAnyTransactions = activity.length > 0;
 
   // Contextual next steps: only what is actually missing, never recreating
   // profiles, buckets, or records that already exist.
@@ -325,12 +326,12 @@ export default function DashboardPage() {
           <MetricCard icon="personal" label="Net cash flow" value={formatMoney(s.net, s.currency)} detail="Income − expenses · not profit" />
           <MetricCard icon="transactions" label="Records" value={scoped.filter((t) => t.currency === s.currency).length} detail={s.currency} />
         </section>)}
-        {summaries.length > 0 && <p className="muted dashboard-accounting-note">Net cash flow reflects recorded income minus expenses. It is not a bank balance or profit. Currencies are never combined.</p>}
+        {summaries.length > 0 && <p className="muted dashboard-accounting-note">Net cash flow reflects recorded income minus expenses. It is not a bank balance or profit. Currencies are never combined. POS sales appear in activity, separate from these transaction summaries.</p>}
       </>}
 
       <div className={hasAnyTransactions ? "dashboard-workspace home-layout" : "dashboard-workspace home-layout dashboard-workspace--empty"}>
         <div className="dashboard-aside">
-          <BuckyPanel
+          <HomeBucky
             profiles={profiles}
             buckets={buckets}
             transactions={transactions}
@@ -348,8 +349,8 @@ export default function DashboardPage() {
         </div>
         <div className="dashboard-main">
           {!hasAnyTransactions && <GettingStarted collapsed title="Build your financial picture" intro="Start with your personal money or a business. Your summaries will appear as you save real records." steps={startSteps} />}
-          {hasAnyTransactions && scoped.length === 0 && <Card className="empty-state"><h2>No records in this view</h2><p className="muted">Try another profile or date range. Other records are kept separate.</p><button className="btn ghost" type="button" onClick={() => { setView("all"); setPreset("all"); }}>Show all records</button></Card>}
-          {scoped.length > 0 && summaries.length === 0 && <Card className="overview-note"><h2>No income or expenses in this selection</h2><p className="muted">Savings movements, transfers, and sales appear in activity, separate from income and expense summaries.</p></Card>}
+          {hasAnyTransactions && scopedActivity.length === 0 && <Card className="empty-state"><h2>No records in this view</h2><p className="muted">Try another profile or date range. Other records are kept separate.</p><button className="btn ghost" type="button" onClick={() => { setView("all"); setPreset("all"); }}>Show all records</button></Card>}
+          {scopedActivity.length > 0 && summaries.length === 0 && <Card className="overview-note"><h2>No income or expenses in this selection</h2><p className="muted">Savings movements, transfers, and sales appear in activity, separate from income and expense summaries.</p></Card>}
           <section className="home-explore" aria-labelledby="explore-heading">
             <h2 id="explore-heading">Explore Bucketa</h2>
             <div className="home-shortcuts">
@@ -377,10 +378,10 @@ export default function DashboardPage() {
           </>}
 
         </div>
-          {scoped.length > 0 && (
+          {scopedActivity.length > 0 && (
             <Card className="txn-history" aria-labelledby="recent-heading">
               <div className="panel-head">
-                <div><p className="section-eyebrow">ACTIVITY</p><h2 id="recent-heading">Recent transactions</h2></div>
+                <div><p className="section-eyebrow">ACTIVITY</p><h2 id="recent-heading">Recent activity</h2></div>
                 <a className="btn ghost home-history-link" href={fullHistoryHref} aria-label="Open full transaction history for this selection"><Icon name="chevron" /></a>
               </div>
               <ul className="txn-list">
@@ -392,6 +393,7 @@ export default function DashboardPage() {
                     amountLabel={formatMoney(txn.amountMinor, txn.currency)}
                     meta={<>
                       <span>{profileName(txn.profileId)}</span>
+                      {txn.origin === "pos" && <span>Completed sale · read-only</span>}
                       {txn.category && <span>{txn.category}</span>}
                       {bucketName(txn.bucketId) && <span>{bucketName(txn.bucketId)}</span>}
                     </>}
@@ -403,6 +405,7 @@ export default function DashboardPage() {
           )}
       </div>
       </>}
+
     </section>
   );
 }

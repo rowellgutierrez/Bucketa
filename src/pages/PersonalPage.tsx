@@ -1,3 +1,4 @@
+import {recordBuckyEvent} from "../lib/buckyPresentation";
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import TransactionRow from "../components/TransactionRow";
@@ -668,6 +669,7 @@ export default function PersonalPage() {
         percentAfter,
       });
       if (reaction) {
+        recordBuckyEvent({id:'record:'+txn.id,status:'saved',title:reaction.completesGoal?'Savings goal achieved':movementType==='savings-deposit'?'Savings deposit saved':'Savings withdrawal saved',detail:bucket.name+' · '+formatMoney(txn.amountMinor,txn.currency),profileId:txn.profileId,profileName:activeProfile.name,currency:txn.currency,recordId:txn.id});
         buckyRef.current?.handleFinancialEvent(reaction.event, {
           confirmed: true,
           progress: reaction.progress,
@@ -1223,16 +1225,7 @@ export default function PersonalPage() {
                     </div>
                   );
                 })()}
-                <details className="help-details">
-                  <summary>What are savings &amp; budgets?</summary>
-                  <p className="muted">
-                    Savings — money you are setting aside. Budget — a planned
-                    spending area. Allocated — money assigned to a specific
-                    purpose. Assign records to a bucket to see its recorded net
-                    cash flow (income minus expenses); a bucket is an organiser,
-                    not a bank account.
-                  </p>
-                </details>
+                <p className="muted bucket-guide-link">Buckets organize records, not bank accounts. <a href="#/settings">Help &amp; Guide</a></p>
                 {showBucketForm && (
                   <form className="inline-form bucket-create" onSubmit={onSaveBucket} noValidate>
                     <h3>{editingBucketId ? "Edit savings / budget" : "New savings / budget"}</h3>

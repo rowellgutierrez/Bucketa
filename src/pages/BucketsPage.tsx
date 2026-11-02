@@ -916,14 +916,7 @@ export default function BucketsPage() {
                   </div>
                 );
               })()}
-              <details className="help-details">
-                <summary>What do the bucket types mean?</summary>
-                <p className="muted">
-                  Savings — money set aside. Budget — a planned spending area.
-                  Allocated — money assigned to a specific purpose. Any bucket
-                  total is recorded net cash flow, not a bank or account balance.
-                </p>
-              </details>
+              <p className="muted bucket-guide-link">Buckets organize records, not bank accounts. <a href="#/settings">Help &amp; Guide</a></p>
 
               {buckets.length === 0 ? (
                 <div className="empty-state dash-empty">

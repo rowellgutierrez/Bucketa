@@ -85,6 +85,7 @@ export interface BuckyAnalysis {
   /** Recorded salary/bonus/advance payments (expenses linked to an
    * employee by relatedId or by the name in the payment description).
    * Internal analysis data only — never sent to a model. */
+  ambiguousEmployeeNames?: string[];
   compensationPayments: { employeeName: string; currency: string; amountMinor: number; date: string; type: CompensationType }[];
   limitations: string[];
   hasAnyData: boolean;
@@ -418,6 +419,7 @@ export function analyzeBuckyFinances(input: {
     duplicateGroups,
     lowStock,
     compensationPayments,
+    ambiguousEmployeeNames: [...new Set(employees.map(e => e.name.trim().toLowerCase()))].filter(name => employees.filter(e => e.name.trim().toLowerCase() === name).length > 1),
     limitations,
     hasAnyData: transactions.length > 0 || sales.length > 0 || products.length > 0,
   };
@@ -433,12 +435,34 @@ export interface BuckyAnswer {
 
 /** Deterministic question answering over a completed analysis. No model call. */
 export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): BuckyAnswer {
-  const q = question.toLowerCase();
+  const original = question.toLowerCase().trim();
+  const q = original.replace(/\b(nagastos|ginastos|gastos)\b/g, 'expenses').replace(/\bbenta\b/g, 'POS revenue').replace(/\b(ipon|naipon)\b/g, 'savings').replace(/\b(imbentaryo|produkto)\b/g, 'inventory').toLowerCase();
   const pick = (kind: BuckyInsight["kind"]) => analysis.insights.find((i) => i.kind === kind);
   const insufficient = (msg: string): BuckyAnswer => ({ answer: msg, facts: [], proposalIds: [], insufficientData: true });
 
   if (!analysis.hasAnyData) {
     return insufficient(`I don't have any saved records for ${analysis.profileName} yet, so I can't identify patterns. Add or scan a record first, then ask me again.`);
+  }
+  if (/salary rate|configured rate|agreed rate|tax|deduction|amount owed|payroll calculation/.test(q)) return insufficient('I can report recorded employee payments, not payroll calculations or amounts owed. Review configured rates and payment history in Employees.');
+  if (/\b(profit|net income|tubo|kita|kinita)\b/.test(q)) return insufficient('I can report recorded income, expenses, cash flow, and POS revenue. These records do not establish profit or a bank balance.');
+  if (/\b(best|top|most|highest)\b.*\b(products?|sold|sales?)\b|\bproducts?\b.*\b(best|sold most)\b/.test(q)) return insufficient('I can report completed POS revenue and low stock, but I cannot reliably rank product performance yet.');
+  if (/inventory.*(?:value|valuation)|(?:value|valuation).*inventory/.test(q)) return insufficient('I can report low stock, but inventory valuation is not supported by this answer path.');
+  const totalIncome = /\b(income|earned|earnings)\b/.test(q);
+  const totalExpense = /\b(expenses?|spent|spending)\b/.test(q) && !/why|increase|decrease|trend|category|categories|biggest|largest/.test(q);
+  const totalSales = /\b(sales?|pos|revenue|sell|sold)\b/.test(q);
+  const dateQualified = /\b(today|yesterday|this (?:week|month|year)|last (?:week|month|year)|january|february|march|april|june|july|august|september|october|november|december|20\d{2}|ngayon|kahapon|buwan|linggo|taon)\b/.test(q) || /\b(?:in|for|during)\s+may\b|\b(?:last|past)\s+\d+\s+(?:days|weeks|months|years)\b/.test(q);
+  if ((totalIncome || totalExpense || totalSales || /cash flow/.test(q)) && dateQualified && !/salary|salaries|payroll|bonus|advance|employee|why|trend|increas/.test(q)) {
+    return insufficient('I cannot reliably apply that date range to this question yet. Use the date filters in Transactions or Sales / POS, or ask for an all-time total.');
+  }
+  if ((totalIncome || totalExpense || totalSales) && !/salary|salaries|payroll|bonus|advance|employee|saving|goal|bucket|duplicate|twice|double|stock|inventory|product|why|trend|increase|decrease|category|categories|largest|biggest/.test(q)) {
+    if (totalSales && !analysis.currencies.some(c => c.posSaleCount > 0)) return insufficient('No completed POS sales are recorded for this profile yet.');
+    const metrics: {label:string; key:'incomeMinor'|'expenseMinor'|'posRevenueMinor'}[] = [];
+    if (totalIncome) metrics.push({label:'Recorded income',key:'incomeMinor'});
+    if (totalExpense) metrics.push({label:'Recorded expenses',key:'expenseMinor'});
+    if (totalSales) metrics.push({label:'POS revenue',key:'posRevenueMinor'});
+    const facts = analysis.currencies.flatMap(c => metrics.map(metric => ({label:metric.label+(analysis.currencies.length>1?' ('+c.currency+')':''),value:money(c[metric.key],c.currency)})));
+    if (!facts.length) return insufficient('No matching financial records are saved for this profile yet.');
+    return {answer:'All-time recorded totals for '+analysis.profileName+'. POS revenue is separate from recorded income. Savings movements are not income or expenses.',facts,proposalIds:[],insufficientData:false};
   }
   if (/duplicate|twice|double/.test(q)) {
     const i = pick("duplicates");
@@ -453,6 +477,7 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
   if (
     /salary|salaries|wage|payroll|bonus|advance/.test(q)
     || /\b(employee|employees)\b/.test(q)
+    || /\b(?:did i pay|have i paid)\b/.test(q)
     || (/\b(pay|paid|paying)\b/.test(q)
       && analysis.compensationPayments.some((p) => q.includes(p.employeeName.toLowerCase())))
   ) {
@@ -466,15 +491,20 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     };
     // One named person: "How much did I pay Roger (this month)?"
     const names = [...new Set(payments.map((p) => p.employeeName))];
+    if (/today|yesterday|this week|last week|last month|last year/.test(q)) return insufficient("That payment date range is not supported here. Use Employees payment history to review the dates.");
     const namedPerson = names.find((n) => q.includes(n.toLowerCase()));
+    if (!namedPerson && /\b(?:did i pay|have i paid)\s+(?!in\b|for\b|on\b|this\b|salary\b|salaries\b|employees\b)([\w'-]+)\b/.test(q)) return insufficient("I could not match that employee name to recorded payments in this profile.");
+    if (!namedPerson && /this month/.test(q)) return insufficient("Ask for one employee by name this month, or a named month of salary expenses.");
+    if (namedPerson && analysis.ambiguousEmployeeNames?.includes(namedPerson.trim().toLowerCase())) return insufficient("More than one employee has that name. Open Employees and choose the specific employee payment history.");
     if (namedPerson) {
-      const mine = payments.filter((p) => p.employeeName === namedPerson);
+      const paymentType = /bonus/.test(q) ? "bonus" : /advance/.test(q) ? "advance" : /salary|salaries/.test(q) ? "salary" : null;
+      const mine = payments.filter((p) => p.employeeName === namedPerson && (!paymentType || p.type === paymentType));
       const thisMonth = /this month/.test(q);
       const scoped = thisMonth
         ? mine.filter((p) => p.date.slice(0, 7) === analysis.generatedAt.slice(0, 7))
         : mine;
       if (scoped.length === 0) {
-        return insufficient(`No recorded payments to ${namedPerson} this month.`);
+        return insufficient(`No matching recorded payments to ${namedPerson}${thisMonth ? " this month" : ""}.`);
       }
       return {
         answer: `You paid ${namedPerson} ${totalsBy(scoped).map((f) => f.value).join(" and ")} across ${scoped.length} recorded payment${scoped.length === 1 ? "" : "s"}${thisMonth ? " this month" : ""}. These are recorded salary/bonus/advance expenses, not a payroll calculation.`,
@@ -506,6 +536,8 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     }
     // Highest recorded payments.
     if (/highest|most|top/.test(q)) {
+      if (analysis.ambiguousEmployeeNames?.length) return insufficient("Some employee names are repeated. Compare their individual records in Employees payment history instead.");
+      if (new Set(payments.map(p => p.currency)).size > 1) return insufficient("These payments use different currencies, so I cannot rank them together without an exchange-rate policy.");
       const byPerson = new Map<string, { currency: string; total: number; count: number }>();
       for (const p of payments) {
         const key = `${p.employeeName}|${p.currency}`;
@@ -547,15 +579,19 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     if (!i) return insufficient("No completed POS sales are recorded for this profile yet, so I can't report POS revenue.");
     return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: i.proposalId ? [i.proposalId] : [], insufficientData: false };
   }
-  if (/saving|goal|bucket/.test(q)) {
+  if (/saving|saved|goal|bucket/.test(q)) {
     const savingsInsights = analysis.insights.filter((i) => i.kind === "savings");
     if (savingsInsights.length === 0) return insufficient("No bucket with a savings goal has progress to report for this profile yet.");
     // Named-goal questions ("How is my iPhone goal doing?") resolve to that
     // goal; insight titles start with the bucket name.
     const named = savingsInsights.find((i) =>
-      q.includes(i.title.split(":")[0].trim().toLowerCase()),
+      original.includes(i.title.split(":")[0].trim().toLowerCase()),
     );
     if (named) return { answer: `${named.title}. ${named.detail}`, facts: named.evidence, proposalIds: [], insufficientData: false };
+    const explicitGoal = /\b(?:my|the)\s+(.+?)\s+(?:savings?\s+goal|goal|bucket)\b/.exec(q)?.[1];
+    const filipinoTarget = /\b(?:para sa|sa)\s+([^?.!]+)/.exec(original)?.[1]?.trim();
+    if (filipinoTarget) return insufficient("I could not match that savings goal in this profile. Ask using its exact name.");
+    if (explicitGoal && !/^(savings?|financial|personal|business)$/.test(explicitGoal)) return insufficient('I could not match that savings goal in this profile. Ask using its exact name.');
     if (savingsInsights.length === 1) {
       const i = savingsInsights[0];
       return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: [], insufficientData: false };
@@ -567,7 +603,7 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
       insufficientData: false,
     };
   }
-  if (/cash|summary|how|overview|doing/.test(q)) {
+  if (/cash\s*flow|financial summary|overview|how am i doing|how is my business doing|net cash/.test(q)) {
     const cash = analysis.insights.filter((i) => i.kind === "cash-flow");
     if (cash.length === 0) return insufficient("There are no income or expense records to summarise yet.");
     return {
@@ -579,9 +615,9 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
   }
   return {
     answer: "I can explain expenses, cash flow, possible duplicates, savings goals, POS revenue, and low stock for this profile. Try: “Why are my expenses increasing?”",
-    facts: analysis.insights.slice(0, 3).flatMap((i) => i.evidence),
+    facts: [],
     proposalIds: [],
-    insufficientData: false,
+    insufficientData: true,
   };
 }
 

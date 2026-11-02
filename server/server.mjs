@@ -1,3 +1,5 @@
+import { mockProductAnalysis } from "./productAnalysis.mjs";
+import { buildMetaProductRequest, sendMetaProduct } from "./metaClient.mjs";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { getConfig, getLiveTestToken, getModelApiKey, loadRootEnv } from "./config.mjs";
@@ -278,6 +280,21 @@ async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }
   }
 }
 
+async function handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl}) {
+ if(!req.headers['content-type']?.includes('application/json')) throw errors.invalidRequest();
+ let payload;
+ try { payload = JSON.parse((await readBody(req)).toString('utf8')); } catch(error) { if(error instanceof PublicError) throw error; throw errors.invalidRequest(); }
+ if(!payload || typeof payload !== 'object' || !['mock','live'].includes(payload.mode)) throw errors.invalidRequest();
+ const bytes = decodeBase64Image(payload.imageBase64);
+ if(!bytes) throw errors.unsupportedImage();
+ const {mediaType} = validateImageBuffer(bytes,payload.mediaType);
+ if(payload.mode === 'mock') { sendJson(res,200,{mode:'mock',model:null,draft:mockProductAnalysis()}); return; }
+ assertLiveAllowed({liveMetaEnabled:config.liveMetaEnabled,modelApiKey:getModelApiKey(),liveTestToken:getLiveTestToken(),requestToken:req.headers['x-bucketa-live-test']});
+ liveLimiter.consume();
+ const draft = await sendMetaProduct(buildMetaProductRequest({imageBase64:payload.imageBase64,mediaType,apiKey:getModelApiKey()}),fetchImpl);
+ sendJson(res,200,{mode:'live',model:META_MODEL_ID,draft});
+}
+
 export function createAppServer(config = getConfig(), deps = {}) {
   const liveLimiter = deps.liveLimiter ?? createLiveLimiter();
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -318,6 +335,9 @@ export function createAppServer(config = getConfig(), deps = {}) {
         await handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl });
         status = 200;
         return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/products/analyze") {
+        await handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl}); status = 200; return;
       }
       if (req.method === "POST" && url.pathname === "/api/extract") {
         entryCount = await handleExtract(req, res, { config, liveLimiter, fetchImpl });

@@ -10,6 +10,8 @@ import type {
 } from "./types.ts";
 import {
   BucketaDataError,
+  findBarcodeConflict,
+  normalizeBarcode,
   findUnsafeBusinessReferences,
   nowIso,
   validateBucket,
@@ -557,7 +559,37 @@ export function createTransactionConfirmed(record: Transaction): Promise<Transac
 export const profilesRepo = createRepository<Profile>("profiles", validateProfile, { byProfile: false });
 export const bucketsRepo = createRepository<Bucket>("buckets", validateBucket);
 export const transactionsRepo = createRepository<Transaction>("transactions", validateTransaction);
-export const productsRepo = createRepository<Product>("products", validateProduct);
+const baseProductsRepo = createRepository<Product>("products", validateProduct);
+
+/** Check and write in one serialized transaction, including across tabs. */
+function writeProduct(id: string, input: Product | Partial<Product>, creating: boolean): Promise<Product> {
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const transaction = db.transaction("products", "readwrite");
+    const store = transaction.objectStore("products");
+    let result: Product;
+    let failure: unknown;
+    transaction.oncomplete = () => resolve(result);
+    transaction.onabort = transaction.onerror = () => reject(failure ?? new BucketaDataError("Product could not be saved."));
+    const request = store.getAll();
+    request.onsuccess = () => {
+      try {
+        const products = request.result as Product[];
+        const existing = products.find(p => p.id === id);
+        if (!creating && !existing) throw new BucketaDataError("Product no longer exists.");
+        result = creating ? { ...input } as Product : { ...existing!, ...input, id, profileId: existing!.profileId, createdAt: existing!.createdAt, updatedAt: nowIso() };
+        result.barcode = normalizeBarcode(result.barcode) || null;
+        validateProduct(result);
+        if (findBarcodeConflict(products, result.profileId, result.barcode, creating ? "" : id)) throw new BucketaDataError("This barcode is already assigned in this business.");
+        if (creating) store.add(result); else store.put(result);
+      } catch (error) { failure = error; transaction.abort(); }
+    };
+  }));
+}
+export const productsRepo = {
+  ...baseProductsRepo,
+  create: (record: Product) => writeProduct(record.id, record, true),
+  update: (id: string, patch: Partial<Product>) => writeProduct(id, patch, false),
+};
 export const employeesRepo = createRepository<Employee>("employees", validateEmployee);
 export const salesRepo = createRepository<Sale>("sales", validateSale);
 

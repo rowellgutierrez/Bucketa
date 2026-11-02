@@ -1,3 +1,4 @@
+import { notifyRecordsChanged } from "../lib/dataChange";
 import Icon from "../components/ui/Icon";
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -17,6 +18,8 @@ import {
   setCartQuantity,
   type Cart,
 } from "../lib/pos";
+import BarcodeScanner from "../components/BarcodeScanner";
+import { findProductByBarcode } from "../lib/barcode";
 import Receipt from "../components/Receipt";
 
 type Status = "loading" | "ready" | "error";
@@ -41,6 +44,7 @@ export default function PosPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [cart, setCart] = useState<Cart>([]);
+  const [scanning, setScanning] = useState(false);
   const [search, setSearch] = useState("");
   const [received, setReceived] = useState("");
   const [showSummary, setShowSummary] = useState(false);
@@ -131,6 +135,7 @@ export default function PosPage() {
 
   async function switchBusiness(id: string) {
     if (id === profileId) return;
+    setScanning(false);
     setProfileId(id);
     setCart([]);
     setReceived("");
@@ -191,6 +196,7 @@ export default function PosPage() {
       // One atomic transaction: sale recorded + stock deducted, or neither.
       await completeSale(sale);
       const recorded = (await salesRepo.getById(sale.id)) ?? sale;
+      notifyRecordsChanged({kind:"pos-sale-completed",profileId:recorded.profileId,recordId:recorded.id});
       await loadBusinessData(activeProfile.id);
       setLastSale(recorded);
       setSelectedSaleId(recorded.id);
@@ -227,10 +233,17 @@ export default function PosPage() {
 
   return (
     <section className="page finance-page pos-page">
+      {scanning && activeProfile && <div className="card"><BarcodeScanner onClose={() => setScanning(false)} onDetected={code => {
+        const product = findProductByBarcode(products, activeProfile.id, code);
+        if (!product || product.currency !== activeProfile.currency) { setCheckoutError("No active product matches this barcode in this business."); return; }
+        if (product.stock <= 0) { setCheckoutError("This product is out of stock."); return; }
+        setCart(previous => addToCart(previous, product)); setCheckoutError(""); setNotice('Added ' + product.name + '. Review quantities before checkout.');
+      }} /></div>}
       <PageHeader
         className="workspace-page-header"
         eyebrow="BUSINESS TOOLS"
         title="Sales & POS"
+        actions={activeProfile ? <button className="btn ghost" type="button" onClick={() => setScanning(true)}>Smart Scan</button> : undefined}
         description="Build a sale, review the total, and confirm checkout. Stock updates when the sale completes."
       />
 

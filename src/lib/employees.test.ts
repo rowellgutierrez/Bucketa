@@ -8,7 +8,28 @@ import {
   monthlyCompensation,
   paymentsForEmployee,
   summarizeEmployeePayments,
+  calculatePaymentMinor,
 } from "./employees.ts";
+import {validateEmployee} from "../data/validation.ts";
+
+test("Explicit payroll units calculate exactly without assuming time worked", () => {
+  assert.equal(calculatePaymentMinor(60000,"5"),300000);
+  assert.equal(calculatePaymentMinor(10000,"8"),80000);
+  assert.equal(calculatePaymentMinor(300000,"2"),600000);
+  assert.equal(calculatePaymentMinor(1500000,"1"),1500000);
+  assert.equal(calculatePaymentMinor(101,"0.5"),51);
+  for (const units of ["", "0", "-2", "NaN", "1e3", "1.12345"]) assert.throws(() => calculatePaymentMinor(10000,units));
+  assert.throws(() => calculatePaymentMinor(Number.MAX_SAFE_INTEGER,"2"));
+});
+
+test("Hourly/daily configuration is additive; legacy bases and absent rates remain valid", () => {
+  for(const salaryFrequency of ["hourly","daily","weekly","biweekly","monthly","custom"] as const) {
+    const employee={...roger,salaryFrequency};
+    assert.equal(validateEmployee(employee),employee);
+  }
+  const legacy={...roger,salaryFrequency:undefined,salaryRateMinor:undefined};
+  assert.equal(validateEmployee(legacy),legacy);
+});
 
 const stamp = "2026-11-01T00:00:00.000Z";
 const roger: Employee = {

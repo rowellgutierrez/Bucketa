@@ -15,6 +15,8 @@ interface Props {
   /** Currency of the displayed goal; used by the SVG fallback only. */
   currency?: string;
   talking?: boolean;
+  paused?: boolean;
+  onReady?: () => void;
   /** Exact GLB clip to play (overrides emotion). */
   animation?: string;
   emotion?: string;
@@ -37,6 +39,8 @@ const BuckyMascot = forwardRef<BuckyHandle, Props>(function BuckyMascot(
     goalId,
     currency,
     talking = false,
+    paused = false,
+    onReady,
     animation,
     emotion,
     label,
@@ -53,12 +57,13 @@ const BuckyMascot = forwardRef<BuckyHandle, Props>(function BuckyMascot(
         progress={progress ?? 0}
         goalId={goalId}
         talking={talking}
+        paused={paused}
         animation={animation}
         emotion={emotion}
         accessory="none"
         label={label ?? "Bucky, the Bucketa mascot"}
         style={{ width: "100%", height: "100%" }}
-        onReady={() => setStatus("ready")}
+        onReady={() => { setStatus("ready"); onReady?.(); }}
         onError={() => setStatus("error")}
       />
       {status === "loading" && (

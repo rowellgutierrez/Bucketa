@@ -38,6 +38,7 @@ test("legacy stored preferences keep working and gain the responses default", ()
   // Exactly what earlier Bucky versions wrote: no responsesOn field.
   store.set(VOICE_SETTINGS_KEY, JSON.stringify({ volume: 0.5, rate: 1.2, pitch: 0.8 }));
   assert.deepEqual(loadVoiceSettings(), {
+    language: "en-US",
     volume: 0.5,
     rate: 1.2,
     pitch: 0.8,
@@ -49,6 +50,7 @@ test("settings round-trip through the same storage key, clamped to range", () =>
   store.clear();
   saveVoiceSettings({ volume: 0.25, rate: 1.5, pitch: 0.5, responsesOn: false });
   assert.deepEqual(loadVoiceSettings(), {
+    language: "en-US",
     volume: 0.25,
     rate: 1.5,
     pitch: 0.5,
@@ -62,3 +64,10 @@ test("defaults apply when nothing is stored", () => {
   store.clear();
   assert.deepEqual(loadVoiceSettings(), DEFAULT_VOICE_SETTINGS);
 });
+
+ test("Filipino input preference persists and unsupported language codes fall back safely", () => {
+   store.clear(); saveVoiceSettings({...DEFAULT_VOICE_SETTINGS,language:'fil-PH'});
+   assert.equal(loadVoiceSettings().language,'fil-PH');
+   store.set(VOICE_SETTINGS_KEY,JSON.stringify({...DEFAULT_VOICE_SETTINGS,language:'unsupported'}));
+   assert.equal(loadVoiceSettings().language,'en-US');
+ });

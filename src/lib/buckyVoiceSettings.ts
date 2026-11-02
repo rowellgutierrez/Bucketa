@@ -4,7 +4,11 @@
  * event plus the cross-tab `storage` event keep open views in sync without
  * a page reload. */
 
+export type BuckySpeechLanguage = "en-US" | "fil-PH";
+
 export interface VoiceSettings {
+  /** Recognition language; answers currently remain in English. */
+  language?: BuckySpeechLanguage;
   /** 0–1 */
   volume: number;
   /** 0.5–1.5 multiplier */
@@ -17,6 +21,7 @@ export interface VoiceSettings {
 
 export const VOICE_SETTINGS_KEY = "bucketa.buckyVoiceSettings";
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  language: "en-US",
   volume: 0.9,
   rate: 0.95,
   pitch: 1.05,
@@ -37,6 +42,7 @@ export function loadVoiceSettings(): VoiceSettings {
     if (!raw) return { ...DEFAULT_VOICE_SETTINGS };
     const parsed = JSON.parse(raw) as Partial<VoiceSettings>;
     return {
+      language: parsed.language === "fil-PH" ? "fil-PH" : "en-US",
       volume: clampVoice(parsed.volume, 0, 1, DEFAULT_VOICE_SETTINGS.volume),
       rate: clampVoice(parsed.rate, 0.5, 1.5, DEFAULT_VOICE_SETTINGS.rate),
       pitch: clampVoice(parsed.pitch, 0.5, 1.5, DEFAULT_VOICE_SETTINGS.pitch),

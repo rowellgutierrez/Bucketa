@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appendFinalTranscript,
+  buckyUtteranceTuning,
   canRestartRecognition,
   hasSilenceElapsed,
   pickPreferredVoice,
@@ -143,6 +144,13 @@ test("auto-processing after speech requires a clean, non-cancelled settle", () =
   assert.equal(shouldAutoProcessTranscript({ heard: "", errorCode: "", cancelled: false }), false);
 });
 
+test("Bucky voice tuning stays warm and subtle, never squeaky", () => {
+  assert.deepEqual(buckyUtteranceTuning({ rate: 0.95, pitch: 1.05 }), { rate: 0.95, pitch: 1.05 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: 1.5, pitch: 1.5 }), { rate: 1.02, pitch: 1.12 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: 0.5, pitch: 0.5 }), { rate: 0.9, pitch: 1.0 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: Number.NaN, pitch: Number.NaN }), { rate: 0.95, pitch: 1.05 });
+});
+
 test("preferred synthesis voice ranks natural English voices first", () => {
   const voices = [
     { name: "Microsoft David - English (United States)", lang: "en-US", localService: true },
@@ -154,3 +162,8 @@ test("preferred synthesis voice ranks natural English voices first", () => {
   assert.equal(pickPreferredVoice([{ name: "Voix française", lang: "fr-FR" }]), null);
   assert.equal(pickPreferredVoice([]), null);
 });
+
+ test('unsupported recognition languages offer a safe language or typing fallback',()=>{
+  const result=speechRecognitionErrorMessage('language-not-supported');
+  assert.equal(result.phase,'error');assert.match(result.message,/selected speech language/);
+ });

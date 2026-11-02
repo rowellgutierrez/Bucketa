@@ -14,6 +14,20 @@ import { summarizeTransactions } from "./finance.ts";
 
 export type CompensationType = "salary" | "bonus" | "advance";
 
+/** Explicit units only; exact decimal multiplication, rounded half-up to one
+ * currency minor unit. No record is created or changed by this helper. */
+export function calculatePaymentMinor(rateMinor: number, units: string): number {
+  if (!Number.isSafeInteger(rateMinor) || rateMinor <= 0) throw new Error("Enter a positive rate.");
+  if (!/^\d{1,9}(?:\.\d{1,4})?$/.test(units.trim())) throw new Error("Enter units worked (up to 4 decimal places).");
+  const [whole, fraction = ""] = units.trim().split(".");
+  const scale = 10n ** BigInt(fraction.length);
+  const quantity = BigInt(whole) * scale + BigInt(fraction || "0");
+  if (quantity <= 0n) throw new Error("Units worked must be greater than zero.");
+  const result = (BigInt(rateMinor) * quantity + scale / 2n) / scale;
+  if (result <= 0n || result > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Calculated payment is outside the supported range.");
+  return Number(result);
+}
+
 export const COMPENSATION_CATEGORIES: Record<CompensationType, string> = {
   salary: "Salaries",
   bonus: "Bonuses",

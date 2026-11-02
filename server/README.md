@@ -28,3 +28,14 @@ Environment variables (see `.env.example`): `MODEL_API_KEY` (server-only; only r
 - Tests use fictional financial records only: `npm run test:server` (offline, no API key needed).
 
 Live Muse Spark testing is M1B and requires separate approval.
+
+
+## Current voice-to-model routing and product analysis
+
+Speak uses the browser's SpeechRecognition/webkitSpeechRecognition implementation, not a Meta speech-to-text endpoint. The shared speech-language preference explicitly selects en-US or fil-PH; there is no automatic language detection and browser support for Filipino varies. Browser recognition may use its provider's online service. Final transcripts use the same local Bucky parser and record-grounded answer function as typed questions. Clean recognition completion processes the transcript; recognition errors retain a review step. Every financial write still requires a separate confirmation.
+
+Ordinary Speak/Send questions in the current BuckyPanel do not call the Meta advisor. Only the explicit Try AI interpretation control sends an unresolved action request to POST /api/bucky/interpret with runtime live authorization. The existing server Meta client targets muse-spark-1.3 through the Responses API. The configured model and request builder are not proof of successful live inference; live compatibility remains unverified. Spoken answers use browser speechSynthesis, currently in English, with the existing native voice preference and tuning.
+
+POST /api/products/analyze accepts an image and an explicit mock/live mode. Mock results are deterministic fictional product drafts, not image understanding. Live mode reuses the existing server authorization gates, shared request quota, image validation, and structured response validation. No live request is authorized merely by opening the application. Product-photo mock success does not verify the live model.
+
+All live endpoints retain ENABLE_LIVE_META, server-only MODEL_API_KEY, runtime LIVE_TEST_TOKEN/header authorization, and the shared session quota described above. Keep the backend bound to localhost. No speech API key is required. Technical setup belongs here; the Settings guide is intended for ordinary users.

@@ -82,6 +82,7 @@ export interface SpeechRecognitionLike {
   maxAlternatives: number;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onstart?: (() => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;
@@ -193,6 +194,21 @@ export interface SpeechVoiceLike {
  * the caller then leaves the utterance voice unset (browser default).
  * No external TTS service is involved.
  */
+/**
+ * Bucky's single voice personality: warm, friendly, slightly animated but
+ * professional. Applied on top of the user's volume setting as a subtle
+ * clamp — never squeaky or cartoonish. Browser voices differ per device,
+ * so this only nudges rate/pitch; it cannot make voices identical.
+ */
+export function buckyUtteranceTuning(settings: { rate: number; pitch: number }): { rate: number; pitch: number } {
+  const clamp = (v: number, min: number, max: number, fallback: number) =>
+    Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+  return {
+    rate: clamp(settings.rate, 0.9, 1.02, 0.95),
+    pitch: clamp(settings.pitch, 1.0, 1.12, 1.05),
+  };
+}
+
 export function pickPreferredVoice(voices: readonly SpeechVoiceLike[]): SpeechVoiceLike | null {
   if (!voices.length) return null;
   const score = (voice: SpeechVoiceLike): number => {
@@ -254,7 +270,7 @@ export function speechRecognitionErrorMessage(code: string): { message: string; 
     case "network":
       return { message: "Speech recognition needs a network connection in this browser. Type your question instead.", phase: "error" };
     case "language-not-supported":
-      return { message: "English speech recognition isn't available in this browser. Type your question instead.", phase: "error" };
+      return { message: "The selected speech language isn't supported by this browser. Choose English or type your question instead.", phase: "error" };
     case "aborted":
       return { message: "", phase: "idle" };
     default:

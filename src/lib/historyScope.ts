@@ -1,4 +1,4 @@
-import type { Profile, Transaction } from "../data/types.ts";
+import type { Profile, Sale, Transaction } from "../data/types.ts";
 
 export interface HistoryScope {
   scope: "all" | "personal" | "business";
@@ -78,4 +78,16 @@ export function selectHistory(records: readonly Transaction[], profiles: readonl
       .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)),
     error: null,
   };
+}
+
+/** Read-only activity projection. Never pass these display rows to a repository. */
+export function buildActivity(records: readonly Transaction[], sales: readonly Sale[], profiles: readonly Profile[]): Transaction[] {
+ const businesses = new Map(profiles.filter(p => p.kind === 'business').map(p => [p.id,p]));
+ const completed = new Map(sales.filter(s => businesses.get(s.profileId)?.currency === s.currency).map(s => [s.id,s]));
+ const existing = records.filter(t => !(t.type === 'sale' && t.origin === 'pos' && t.relatedId && completed.has(t.relatedId)));
+ const projected: Transaction[] = [...completed.values()].map(s => Object.freeze({
+  id:'pos-activity:'+s.id, profileId:s.profileId,bucketId:null,type:'sale',amountMinor:s.totalMinor,currency:s.currency,
+  date:s.createdAt.slice(0,10), description:'POS sale · '+(s.receiptNumber ?? s.id),category:null,origin:'pos',relatedId:s.id,createdAt:s.createdAt,updatedAt:s.updatedAt,
+ }));
+ return [...existing,...projected];
 }

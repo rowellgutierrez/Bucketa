@@ -42,10 +42,8 @@ export default function SettingsPage() {
       <Card className="settings-card" aria-labelledby="bucky-voice-heading">
         <h2 id="bucky-voice-heading">Bucky &amp; Voice</h2>
         <p className="muted">
-          Bucky uses your browser's built-in speech — no paid speech service.
-          Changes save automatically on this device and apply the next time
-          Bucky speaks, without reloading the page. Some browsers ignore
-          pitch or volume.
+          Voice preferences save automatically on this device. Your browser
+          controls voice availability and may ignore pitch or volume.
         </p>
 
         <div className="settings-row">
@@ -63,6 +61,10 @@ export default function SettingsPage() {
           </button>
         </div>
 
+        <div className="field"><label htmlFor="settings-speech-language">Speech input language</label>
+          <select id="settings-speech-language" className="input" value={voice.language ?? 'en-US'} onChange={event => update({language: event.target.value as 'en-US' | 'fil-PH'})}><option value="en-US">English</option><option value="fil-PH">Filipino / Tagalog</option></select>
+          <p className="field-hint">Availability depends on your browser. Bucky's written and spoken answers currently use English.</p>
+        </div>
         <div className="settings-sliders">
           <label htmlFor="settings-voice-volume">
             <span>Volume <output htmlFor="settings-voice-volume">{Math.round(voice.volume * 100)}%</output></span>
@@ -115,6 +117,20 @@ export default function SettingsPage() {
           </button>
           <a className="btn ghost" href="#/dashboard">Open Bucky on Home</a>
         </div>
+      </Card>
+      <Card className="help-guide" aria-labelledby="help-guide-heading">
+        <h2 id="help-guide-heading">Help &amp; Guide</h2>
+        <p className="muted">A quick guide to your workspace. Financial records stay in this browser, separated by profile and currency.</p>
+        <details><summary>Business profiles &amp; Home</summary><p>Create, rename, or switch businesses in Buckets. Home lets you filter Personal, Business, or All activity and choose dates. Income minus expenses is recorded net cash flow, not profit or a bank balance. Currencies are never combined. Use See more for the matching transaction history; POS receipts and sales remain in Sales / POS.</p><a href="#/buckets">Open business profiles</a></details>
+        <details><summary>Personal Finance &amp; savings goals</summary><p>Create a personal profile, record income or expenses, and use savings buckets to track goals. Savings deposits and withdrawals are records of money set aside; they are not income or expenses. Bucketa does not move money or connect to bank accounts.</p><a href="#/personal">Open Personal Finance</a></details>
+        <details><summary>Business Buckets</summary><p>Savings tracks money set aside, Budget organizes planned spending, and Allocated marks money assigned to a purpose. Keep each within the selected business. Check each bucket's currency before assigning records. Goal progress uses the records assigned to that bucket, in its own currency.</p><a href="#/buckets">Open Buckets</a></details>
+        <details><summary>Transactions &amp; history</summary><p>Use business selection, dates, and available filters to find records. Full history is read-only; normal business management offers Edit and Delete where allowed. Savings and protected records retain their own rules. Scanner corrections keep the original profile, currency, and bucket.</p><a href="#/transactions">Open Transactions</a></details>
+        <details><summary>Products, inventory &amp; Smart Scan</summary><p>Register products with price, currency, and stock. SKU and barcode help identify each item. Generated BKT- codes are internal store codes, not official GS1 registration. Preview or print labels from the product list. Product-photo analysis proposes editable visual details; you supply price and stock and confirm saving.</p><p>Smart Scan uses native browser barcode detection where supported. Grant rear-camera access on HTTPS or localhost and point at a clear barcode. Manual entry remains available when detection is unsupported. After a detection, tap Scan again before the next camera scan. Manual barcode entry is still available. Always review cart quantities.</p><a href="#/products">Open Products &amp; Inventory</a></details>
+        <details><summary>Sales / POS</summary><p>Select the correct business and add products manually or with Smart Scan. Scanning changes only the cart. Review quantities, payment received, and the total before confirming checkout. Stock is checked and deducted only when checkout succeeds. Receipts and past sales are available here.</p><a href="#/pos">Open Sales / POS</a></details>
+        <details><summary>Employees &amp; salaries</summary><p>Configured salary rates describe an agreement; they are not recorded payments. Select the employee, choose salary, bonus, or advance, then review and confirm the payment. History shows recorded payments for that employee and business, separated by currency.</p><a href="#/employees">Open Employees</a></details>
+        <details><summary>Bucky Record Scanner</summary><p>Take a photo or upload an image, extract a draft, expand entries to edit, and review dates, amounts, currency, and written-total differences. Confirm the final save only after checking every required field. No financial record is saved merely by uploading or extracting an image.</p><a href="#/scanner">Open Record Scanner</a></details>
+        <details><summary>Bucky Financial Intelligence</summary><p>Ask from Home or open the floating mascot. The conversation stays available as you navigate, until the app reloads. Select the profile you want Bucky to analyze. Supported bookkeeping requests produce a preview; only Confirm save writes a record. Confirm or cancel a pending preview before closing or scanning.</p><p>Speak uses browser speech recognition where available; Listen reads an answer aloud. Camera and microphone permission, speech recognition, and voice quality vary by browser and device. Recognition may use the browser provider's online services. Tune spoken responses above.</p><a href="#/dashboard">Open Bucky on Home</a></details>
+        <details><summary>Your data, privacy &amp; feature availability</summary><p>Your records stay in this browser. Another browser or device has separate records. Private browsing is temporary; clearing browser data can remove your records.</p><p>Features marked Demo or Mock use fictional examples, not information read from your photo. Review those examples carefully. Bucky's financial totals come from your saved records. Optional AI features may be unavailable; a demo result is not a live AI result.</p><p>Camera scanning and speech depend on your browser, device, permission, and connection. Choose English or Filipino / Tagalog before tapping Speak. Recognition may use your browser provider's online services; Bucky currently answers in English. Use typing or manual barcode entry whenever voice or scanning is unavailable.</p></details>
       </Card>
     </section>
   );

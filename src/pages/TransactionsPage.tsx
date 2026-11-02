@@ -1,10 +1,10 @@
-import { parseHistoryScope, profileIdFromHash, selectHistory, type HistoryRequest } from "../lib/historyScope";
+import { buildActivity, historyHref, transactionsHrefForProfile, parseHistoryScope, profileIdFromHash, selectHistory, type HistoryRequest } from "../lib/historyScope";
 import { onRecordsChanged } from "../lib/dataChange";
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import TransactionRow from "../components/TransactionRow";
 import Icon from "../components/ui/Icon";
-import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
+import { bucketsRepo, profilesRepo, transactionsRepo, salesRepo } from "../data/db";
 import type { Bucket, Profile, Transaction } from "../data/types";
 import {
   BucketaDataError,
@@ -470,6 +470,7 @@ function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfil
         ) : undefined}
       />
 
+      {activeProfile && <a className="dashboard-link" href={historyHref({scope:"business",profileId:activeProfile.id,from:"",to:""})}>View all activity, including POS sales</a>}
       {status === "loading" && (
         <div className="card loading-state" role="status">Loading transactions…</div>
       )}
@@ -917,15 +918,15 @@ function CombinedRecords({ scope }: { scope: "all" | "personal" }) {
   useEffect(() => {
     let active = true;
     setError("");
-    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll()])
-      .then(([profiles, buckets, records]) => { if (active) setData({ profiles, buckets, records }); })
+    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll(), salesRepo.listAll()])
+      .then(([profiles, buckets, records, sales]) => { if (active) setData({ profiles, buckets, records: buildActivity(records,sales,profiles) }); })
       .catch((reason) => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
   }, [attempt]);
 
   const profileById = new Map(data?.profiles.map((p) => [p.id, p]) ?? []);
   const records = (data?.records ?? [])
-    .filter((txn) => scope === "all" || profileById.get(txn.profileId)?.kind === "personal")
+    .filter((txn) => profileById.has(txn.profileId) && (scope === "all" || profileById.get(txn.profileId)?.kind === "personal"))
     .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 
   return (
@@ -993,8 +994,8 @@ function FullHistory({ request }: { request: HistoryRequest }) {
     if (!request.context) return;
     let active = true;
     setError("");
-    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll()])
-      .then(([profiles, buckets, records]) => { if (active) setData({ profiles, buckets, records }); })
+    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll(), salesRepo.listAll()])
+      .then(([profiles, buckets, records, sales]) => { if (active) setData({ profiles, buckets, records: buildActivity(records,sales,profiles) }); })
       .catch(reason => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
   }, [request.context, attempt]);
@@ -1004,8 +1005,8 @@ function FullHistory({ request }: { request: HistoryRequest }) {
   const scopeLabel = !context ? "Selection unavailable" : context.scope === "business" ? data?.profiles.find(p => p.id === context.profileId)?.name ?? "Business" : context?.scope === "personal" ? "Personal profiles" : "All profiles";
   return <section className="page transactions-page full-history-page">
     <PageHeader className="workspace-page-header" eyebrow="TRACK MONEY" title="Transaction history"
-      description="Your selected activity, including savings and transfers. Read-only."
-      actions={<a className="btn ghost" href="#/transactions">Manage business transactions</a>} />
+      description="Income, expenses, savings, transfers, and completed POS sales. Read-only; POS revenue is separate from recorded income."
+      actions={<a className="btn ghost" href={context?.scope === "business" ? transactionsHrefForProfile(context.profileId) : "#/transactions"}>Manage business transactions</a>} />
     <div className="history-context card">
       <strong>{scopeLabel}</strong>
       {context && <span className="muted">{context.from || "Beginning"} → {context.to || "All dates"} · All recorded currencies</span>}
@@ -1024,6 +1025,7 @@ function FullHistory({ request }: { request: HistoryRequest }) {
               dateLabel={formatDate(txn.date)}
               amountLabel={formatMoney(txn.amountMinor, txn.currency)}
               meta={<>
+                {txn.origin === "pos" && <span>Completed sale · read-only</span>}
                 <span>{data.profiles.find(p => p.id === txn.profileId)?.name}</span>
                 {bucket && <span>{bucket.name}</span>}
                 {txn.category && <span>{txn.category}</span>}
