@@ -1,5 +1,6 @@
 import { buildExtractionPrompt, EXTRACTION_JSON_SCHEMA } from "./extractSchema.mjs";
 import { BUCKY_ADVICE_JSON_SCHEMA, buildBuckyAdvicePrompt } from "./buckyAdvice.mjs";
+import { BUCKY_INTERPRET_JSON_SCHEMA, buildInterpretPrompt } from "./buckyInterpret.mjs";
 import { metaDiagnosticError } from "./metaDiagnostics.mjs";
 
 /**
@@ -275,6 +276,44 @@ export function parseMetaAdviceResponse(json) {
 
 /** Send one Bucky advice request and return the raw advice object. */
 export async function sendMetaAdvice(request, fetchImpl = fetch, options = {}) {
+  const json = await sendMetaEnvelope(request, fetchImpl, options);
+  return parseMetaAdviceResponse(json);
+}
+
+/** Build the exact Responses API request for one Bucky interpretation. */
+export function buildMetaInterpretRequest({ text, context, apiKey }) {
+  return {
+    url: `${META_API_BASE_URL}/responses`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey ?? ""}`,
+    },
+    body: {
+      model: META_MODEL_ID,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: buildInterpretPrompt({ text, context }) },
+          ],
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "bucketa_bucky_interpret",
+          strict: true,
+          schema: BUCKY_INTERPRET_JSON_SCHEMA,
+        },
+      },
+    },
+  };
+}
+
+/** Send one Bucky interpretation request; returns the raw, untrusted object. */
+export async function sendMetaInterpret(request, fetchImpl = fetch, options = {}) {
   const json = await sendMetaEnvelope(request, fetchImpl, options);
   return parseMetaAdviceResponse(json);
 }

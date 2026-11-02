@@ -17,9 +17,9 @@ const ROUTES: Route[] = [
   { id: "transactions", label: "Transactions", shortLabel: "Records", group: "Track money" },
   { id: "products", label: "Products and Inventory", shortLabel: "Products", group: "Business tools" },
   { id: "pos", label: "Sales / POS", shortLabel: "POS", group: "Business tools" },
-  { id: "employees", label: "Employees and Salaries", shortLabel: "Staff", group: "Business tools", planned: true },
+  { id: "employees", label: "Employees and Salaries", shortLabel: "Staff", group: "Business tools" },
   { id: "scanner", label: "AI Record Scanner", shortLabel: "Scanner", group: "Business tools", planned: true },
-  { id: "settings", label: "Settings", shortLabel: "Settings", group: "General", planned: true },
+  { id: "settings", label: "Settings", shortLabel: "Settings", group: "General" },
 ];
 
 function routeFromHash(): string {

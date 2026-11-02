@@ -22,6 +22,10 @@ const paths = {
   sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2",
   more: "M5 11h2v2H5Zm6 0h2v2h-2Zm6 0h2v2h-2Z",
   close: "m6 6 12 12M6 18 18 6",
+  mic: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3M9 21h6",
+  speaker: "M4 10v4h3l5 4V6l-5 4H4ZM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11",
+  speakerMute: "M4 10v4h3l5 4V6l-5 4H4ZM16 9l6 6m0-6-6 6",
+  stop: "M7 7h10v10H7Z",
 } as const;
 export type IconName = keyof typeof paths;
 export default function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {

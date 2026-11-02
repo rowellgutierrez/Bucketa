@@ -70,8 +70,14 @@ export function monthlyIncomeExpense(
 export interface GoalProgress {
   /** Saved amount for the bucket in its currency; see bucketSavedMinor. */
   savedMinor: MinorUnits;
-  /** 0–100, clamped. Negative saved counts as 0. */
+  /** 0–100, clamped. Visual bars and mascot reactions use this so they
+   * never overflow; it must not be presented as the achieved percentage
+   * when a goal is exceeded. */
   percent: number;
+  /** True achievement percentage, unclamped (can exceed 100). */
+  actualPercent: number;
+  /** Amount saved beyond the target, or 0 when the goal is not exceeded. */
+  overTargetMinor: MinorUnits;
 }
 
 export type SavingsMovementType = Extract<
@@ -131,9 +137,12 @@ export function bucketGoalProgress(
 ): GoalProgress | null {
   if (!bucket.targetMinor || bucket.targetMinor <= 0) return null;
   const saved = bucketSavedMinor(transactions, bucket);
+  const actualPercent = Math.max(0, (saved / bucket.targetMinor) * 100);
   return {
     savedMinor: saved,
-    percent: Math.min(100, Math.max(0, (saved / bucket.targetMinor) * 100)),
+    percent: Math.min(100, actualPercent),
+    actualPercent,
+    overTargetMinor: Math.max(0, saved - bucket.targetMinor),
   };
 }
 

@@ -16,6 +16,40 @@ export function historyHref(context: HistoryScope): string {
   return `#/transactions?${query}`;
 }
 
+/**
+ * Link to the manageable Transactions view preselecting one business, by
+ * stable profile ID (never by display name). Used after saving records
+ * for a specific business (e.g. from the scanner) so the destination shows
+ * that business's records in its own currency. This is in-memory view
+ * state carried in the hash: it survives refresh and back/forward, and it
+ * never changes any persistent default profile.
+ */
+export function transactionsHrefForProfile(profileId: string): string {
+  return `#/transactions?${new URLSearchParams({ profileId })}`;
+}
+
+/** Link to Personal Finance preselecting one personal profile, by ID. */
+export function personalHrefForProfile(profileId: string): string {
+  return `#/personal?${new URLSearchParams({ profileId })}`;
+}
+
+/**
+ * The `profileId` carried by a `#/transactions?profileId=…` or
+ * `#/personal?profileId=…` link, or null when the hash carries none (or
+ * carries anything unexpected, in which case callers keep their default
+ * selection). Full-history hashes (`history=1`) are handled separately by
+ * parseHistoryScope and intentionally return null here.
+ */
+export function profileIdFromHash(hash: string): string | null {
+  const query = new URLSearchParams(hash.split("?")[1] ?? "");
+  if (!query.size || query.has("history")) return null;
+  if ([...query.keys()].some((key) => key !== "profileId") || query.getAll("profileId").length !== 1) {
+    return null;
+  }
+  const profileId = (query.get("profileId") ?? "").trim();
+  return profileId ? profileId : null;
+}
+
 export function parseHistoryScope(hash: string): HistoryRequest | null {
   const query = new URLSearchParams(hash.split("?")[1] ?? "");
   if (!query.size) return null;

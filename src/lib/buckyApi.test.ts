@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BuckyApiError, requestBuckyAdvice, type BuckyModelSummary } from "./buckyApi.ts";
+import { BuckyApiError, requestBuckyAdvice, requestBuckyInterpret, type BuckyInterpretContext, type BuckyModelSummary } from "./buckyApi.ts";
 
 const summary: BuckyModelSummary = {
   profileName: "Sari Store",
@@ -126,6 +126,76 @@ test("server errors and malformed responses become safe BuckyApiErrors", async (
       await assert.rejects(
         () => requestBuckyAdvice("Why?", summary),
         (e: unknown) => e instanceof BuckyApiError && e.code === "backend_offline",
+      );
+    },
+  );
+});
+
+const interpretContext: BuckyInterpretContext = {
+  profileName: "Sari Store",
+  profileKind: "business",
+  currency: "PHP",
+  bucketNames: ["iPhone"],
+  employeeNames: ["Roger"],
+};
+
+test("interpret requires a runtime token before any network call", async () => {
+  let called = 0;
+  await withFetch(
+    async () => { called += 1; return new Response("{}"); },
+    async () => {
+      await assert.rejects(
+        () => requestBuckyInterpret("Pay Roger ₱1,000 salary", interpretContext),
+        (e: unknown) => e instanceof BuckyApiError && e.code === "live_token_required",
+      );
+      assert.equal(called, 0);
+    },
+  );
+});
+
+test("interpret posts only text and names, and validates the response shape", async () => {
+  let seenBody = "";
+  let seenUrl = "";
+  await withFetch(
+    async (input, init) => {
+      seenUrl = String(input);
+      seenBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        source: "meta-live",
+        model: "test-model",
+        proposal: {
+          kind: "salary-payment",
+          amountMinor: 100000,
+          date: "2026-11-01",
+          description: null,
+          category: null,
+          bucketName: null,
+          employeeName: "Roger",
+          paymentType: "salary",
+        },
+      }), { status: 200 });
+    },
+    async () => {
+      const res = await requestBuckyInterpret("Roger got his ₱1,000 salary", interpretContext, { liveTestToken: "runtime-only" });
+      assert.equal(res.proposal?.employeeName, "Roger");
+      assert.ok(seenUrl.endsWith("/api/bucky/interpret"));
+      const body = JSON.parse(seenBody) as Record<string, unknown>;
+      assert.deepEqual(Object.keys(body).sort(), ["context", "mode", "text"]);
+      assert.equal(body.mode, "live");
+      // The context carries names and profile basics only — no records,
+      // amounts owed, or salary rates ever leave the browser.
+      assert.deepEqual(
+        Object.keys(body.context as Record<string, unknown>).sort(),
+        ["bucketNames", "currency", "employeeNames", "profileKind", "profileName"],
+      );
+    },
+  );
+  await withFetch(
+    async () => new Response(JSON.stringify({ source: "meta-live", model: null, proposal: { kind: "expense", amountMinor: "lots" } }), { status: 200 }),
+    async () => {
+      await assert.rejects(
+        () => requestBuckyInterpret("Spent ₱500", interpretContext, { liveTestToken: "runtime-only" }),
+        (e: unknown) => e instanceof BuckyApiError && e.code === "invalid_response",
       );
     },
   );

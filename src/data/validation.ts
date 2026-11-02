@@ -145,6 +145,21 @@ export function validateEmployee(r: Employee): Employee {
   assertName(r.name);
   if (!r.profileId) fail("employee profileId is required.");
   if (r.status !== "active" && r.status !== "inactive") fail("employee status is invalid.");
+  if (r.startDate !== undefined && r.startDate !== null) {
+    if (typeof r.startDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(r.startDate)) {
+      fail("employee startDate must be YYYY-MM-DD.");
+    }
+  }
+  if (r.contact !== undefined && r.contact !== null) assertName(r.contact, "contact");
+  if (r.salaryRateMinor !== undefined && r.salaryRateMinor !== null) {
+    assertMinorUnits(r.salaryRateMinor, "salaryRateMinor");
+  }
+  if (r.salaryFrequency !== undefined && r.salaryFrequency !== null) {
+    if (!["weekly", "biweekly", "monthly", "custom"].includes(r.salaryFrequency)) {
+      fail("employee salaryFrequency is invalid.");
+    }
+  }
+  if (r.currency !== undefined && r.currency !== null) assertCurrency(r.currency);
   return r;
 }
 

@@ -26,8 +26,8 @@ import {
   parseAmountToMinorUnits,
 } from "../lib/currency";
 import { canChangeBucketCurrency } from "../lib/recordForm";
+import { onRecordsChanged } from "../lib/dataChange";
 import { bucketGoalProgress } from "../lib/finance";
-import BuckyMascot from "../components/BuckyMascot";
 import BusinessReport, { type BusinessReportData } from "../components/BusinessReport";
 
 
@@ -144,6 +144,18 @@ export default function BucketsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Confirmed Bucky saves refresh the selected business's buckets and
+  // totals in place, preserving the active business selection.
+  useEffect(() => {
+    if (!profileId) return;
+    return onRecordsChanged(() => {
+      void loadBuckets(profileId).catch(() => {
+        // Keep the last loaded records if a refresh fails.
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
 
   useEffect(() => {
     if (!report || !printPending) return;
@@ -887,9 +899,6 @@ export default function BucketsPage() {
                 const progress = goalBucket ? bucketGoalProgress(transactions, goalBucket) : null;
                 return (
                   <div className="bucky-row">
-                    {/* Normal 3D Bucky: Savings mode with internal coins is
-                        reserved for Personal Finance savings goals only. */}
-                    <BuckyMascot size="row" label="Bucky watching this business's goals" />
                     <div>
                       <strong>Bucky keeps an eye on {activeProfile.name}&apos;s goals</strong>
                       {goalBucket && progress ? (

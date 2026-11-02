@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { bucketsRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
-import type { Bucket, Product, Profile, Sale, Transaction } from "../data/types";
+import { bucketsRepo, employeesRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
+import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types";
 import BuckyPanel from "../components/BuckyPanel";
 import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
@@ -15,7 +15,8 @@ import Card, { MetricCard } from "../components/ui/Card";
 import PageHeader from "../components/ui/PageHeader";
 import Icon from "../components/ui/Icon";
 import { historyHref } from "../lib/historyScope";
-import { transactionDisplay } from "../lib/transactionDisplay";
+import { onRecordsChanged } from "../lib/dataChange";
+import TransactionRow from "../components/TransactionRow";
 
 type Status = "loading" | "ready" | "error";
 type View = "personal" | "business" | "all";
@@ -71,6 +72,7 @@ export default function DashboardPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
   const [view, setView] = useState<View>("all");
   const [businessId, setBusinessId] = useState("");
   const [preset, setPreset] = useState<RangePreset>("all");
@@ -82,18 +84,20 @@ export default function DashboardPage() {
     setStatus("loading");
     setLoadError("");
     try {
-      const [allProfiles, allBuckets, allTransactions, allProducts, allSales] = await Promise.all([
+      const [allProfiles, allBuckets, allTransactions, allProducts, allSales, allEmployees] = await Promise.all([
         profilesRepo.listAll(),
         bucketsRepo.listAll(),
         transactionsRepo.listAll(),
         productsRepo.listAll(),
         salesRepo.listAll(),
+        employeesRepo.listAll(),
       ]);
       setProfiles(allProfiles);
       setBuckets(allBuckets);
       setTransactions(allTransactions);
       setProducts(allProducts);
       setSales(allSales);
+      setEmployees(allEmployees);
       const firstBusiness = allProfiles.find((p) => p.kind === "business");
       if (firstBusiness) setBusinessId((prev) => prev || firstBusiness.id);
       setStatus("ready");
@@ -103,9 +107,37 @@ export default function DashboardPage() {
     }
   }
 
+  /** Silent reload after a confirmed Bucky save: refreshes every figure
+   * without flashing the page-level loading state. */
+  async function refreshRecords() {
+    try {
+      const [allProfiles, allBuckets, allTransactions, allProducts, allSales, allEmployees] = await Promise.all([
+        profilesRepo.listAll(),
+        bucketsRepo.listAll(),
+        transactionsRepo.listAll(),
+        productsRepo.listAll(),
+        salesRepo.listAll(),
+        employeesRepo.listAll(),
+      ]);
+      setProfiles(allProfiles);
+      setBuckets(allBuckets);
+      setTransactions(allTransactions);
+      setProducts(allProducts);
+      setSales(allSales);
+      setEmployees(allEmployees);
+    } catch {
+      // The saved record is already committed; Bucky's own updated
+      // figures remain visible even if this refresh fails.
+    }
+  }
+
   useEffect(() => {
     void load();
   }, []);
+
+  // Confirmed Bucky saves refresh every Home figure silently (no
+  // page-level loading flash, view and date filters preserved).
+  useEffect(() => onRecordsChanged(() => void refreshRecords()), []);
 
   const personalProfiles = profiles.filter((p) => p.kind === "personal");
   const businessProfiles = profiles.filter((p) => p.kind === "business");
@@ -288,22 +320,45 @@ export default function DashboardPage() {
           </div>
       {hasAnyTransactions && scoped.length > 0 && <>
         {summaries.map((s) => <section key={s.currency} className="dashboard-metrics" aria-label={`Summary in ${s.currency}`}>
-          <MetricCard icon="income" label="Income" value={formatMoney(s.income, s.currency)} detail="Recorded income · selected dates" />
-          <MetricCard icon="expenses" label="Expenses" value={formatMoney(s.expense, s.currency)} detail="Recorded expenses · selected dates" />
-          <MetricCard icon="personal" label="Net cash flow" value={formatMoney(s.net, s.currency)} detail="Income minus expenses · not profit" />
-          <MetricCard icon="transactions" label="Records" value={scoped.filter((t) => t.currency === s.currency).length} detail={`Saved records in ${s.currency}`} />
+          <MetricCard icon="income" label="Income" value={formatMoney(s.income, s.currency)} detail="Selected dates" />
+          <MetricCard icon="expenses" label="Expenses" value={formatMoney(s.expense, s.currency)} detail="Selected dates" />
+          <MetricCard icon="personal" label="Net cash flow" value={formatMoney(s.net, s.currency)} detail="Income − expenses · not profit" />
+          <MetricCard icon="transactions" label="Records" value={scoped.filter((t) => t.currency === s.currency).length} detail={s.currency} />
         </section>)}
         {summaries.length > 0 && <p className="muted dashboard-accounting-note">Net cash flow reflects recorded income minus expenses. It is not a bank balance or profit. Currencies are never combined.</p>}
       </>}
-      {hasAnyTransactions && startSteps.length > 0 && (
-        <GettingStarted collapsed title="Your next steps" intro="Only steps you have not done yet are listed." steps={startSteps} />
-      )}
 
       <div className={hasAnyTransactions ? "dashboard-workspace home-layout" : "dashboard-workspace home-layout dashboard-workspace--empty"}>
+        <div className="dashboard-aside">
+          <BuckyPanel
+            profiles={profiles}
+            buckets={buckets}
+            transactions={transactions}
+            products={products}
+            sales={sales}
+            employees={employees}
+            preferredProfileId={
+              view === "business"
+                ? businessId
+                : view === "personal"
+                  ? personalProfiles[0]?.id
+                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
+            }
+          />
+        </div>
         <div className="dashboard-main">
           {!hasAnyTransactions && <GettingStarted collapsed title="Build your financial picture" intro="Start with your personal money or a business. Your summaries will appear as you save real records." steps={startSteps} />}
           {hasAnyTransactions && scoped.length === 0 && <Card className="empty-state"><h2>No records in this view</h2><p className="muted">Try another profile or date range. Other records are kept separate.</p><button className="btn ghost" type="button" onClick={() => { setView("all"); setPreset("all"); }}>Show all records</button></Card>}
           {scoped.length > 0 && summaries.length === 0 && <Card className="overview-note"><h2>No income or expenses in this selection</h2><p className="muted">Savings movements, transfers, and sales appear in activity, separate from income and expense summaries.</p></Card>}
+          <section className="home-explore" aria-labelledby="explore-heading">
+            <h2 id="explore-heading">Explore Bucketa</h2>
+            <div className="home-shortcuts">
+              <a href="#/products"><span className="metric-icon"><Icon name="products" /></span><span>Products &amp; Inventory</span><Icon name="chevron" /></a>
+              <a href="#/pos"><span className="metric-icon"><Icon name="pos" /></span><span>POS / Sales</span><Icon name="chevron" /></a>
+              <a href="#/employees"><span className="metric-icon"><Icon name="employees" /></span><span>Employees</span><Icon name="chevron" /></a>
+              <a href="#/scanner"><span className="metric-icon"><Icon name="scanner" /></span><span>Bucky Record Scanner</span><Icon name="chevron" /></a>
+            </div>
+          </section>
           {summaries.length > 0 && <>
             <div className="selector-main chart-currency-row"><span className="muted">Charts currency</span><span className="type-toggle" role="group" aria-label="Chart currency">{summaries.map((s) => <button key={s.currency} type="button" className={activeCurrency === s.currency ? "type-option on" : "type-option"} aria-pressed={activeCurrency === s.currency} onClick={() => setChartCurrency(s.currency)}>{s.currency}</button>)}</span></div>
             <Card className="dashboard-monthly" aria-labelledby="monthly-heading">
@@ -321,31 +376,6 @@ export default function DashboardPage() {
             </Card>
           </>}
 
-          <section className="home-explore" aria-labelledby="explore-heading">
-            <h2 id="explore-heading">Explore Bucketa</h2>
-            <div className="home-shortcuts">
-              <a href="#/products"><span className="metric-icon"><Icon name="products" /></span><span>Products &amp; Inventory</span><Icon name="chevron" /></a>
-              <a href="#/pos"><span className="metric-icon"><Icon name="pos" /></span><span>POS / Sales</span><Icon name="chevron" /></a>
-              <a href="#/employees"><span className="metric-icon"><Icon name="employees" /></span><span>Employees <small className="count-badge">Planned</small></span><Icon name="chevron" /></a>
-              <a href="#/scanner"><span className="metric-icon"><Icon name="scanner" /></span><span>Bucky Record Scanner</span><Icon name="chevron" /></a>
-            </div>
-          </section>
-        </div>
-        <div className="dashboard-aside">
-          <BuckyPanel
-            profiles={profiles}
-            buckets={buckets}
-            transactions={transactions}
-            products={products}
-            sales={sales}
-            preferredProfileId={
-              view === "business"
-                ? businessId
-                : view === "personal"
-                  ? personalProfiles[0]?.id
-                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
-            }
-          />
         </div>
           {scoped.length > 0 && (
             <Card className="txn-history" aria-labelledby="recent-heading">
@@ -354,29 +384,19 @@ export default function DashboardPage() {
                 <a className="btn ghost home-history-link" href={fullHistoryHref} aria-label="Open full transaction history for this selection"><Icon name="chevron" /></a>
               </div>
               <ul className="txn-list">
-                {recent.map((txn) => {
-                  const display = transactionDisplay(txn.type);
-                  return (
-                    <li key={txn.id} className="txn-row" data-kind={txn.type}>
-                      <span className="record-icon"><Icon name={display.icon} /></span>
-                      <div className="txn-main">
-                        <strong>{txn.description}</strong>
-                        <p className="muted bucket-meta">
-                          <span className="txn-type" title={display.context}>{display.label}</span>
-                          <span>{formatDate(txn.date)} · {profileName(txn.profileId)}</span>
-                          {txn.category && <span>{txn.category}</span>}
-                          {bucketName(txn.bucketId) && <span>{bucketName(txn.bucketId)}</span>}
-                        </p>
-                      </div>
-                      <div className="txn-value">
-                        <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
-                          {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
-                        </span>
-                        <span className="txn-direction">{display.context}</span>
-                      </div>
-                    </li>
-                  );
-                })}
+                {recent.map((txn) => (
+                  <TransactionRow
+                    key={txn.id}
+                    txn={txn}
+                    dateLabel={formatDate(txn.date)}
+                    amountLabel={formatMoney(txn.amountMinor, txn.currency)}
+                    meta={<>
+                      <span>{profileName(txn.profileId)}</span>
+                      {txn.category && <span>{txn.category}</span>}
+                      {bucketName(txn.bucketId) && <span>{bucketName(txn.bucketId)}</span>}
+                    </>}
+                  />
+                ))}
               </ul>
               <a className="dashboard-link home-see-more" href={fullHistoryHref}>See more <Icon name="chevron" /></a>
             </Card>

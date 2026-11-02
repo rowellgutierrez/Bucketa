@@ -102,6 +102,77 @@ function analyze(over: Partial<Parameters<typeof analyzeBuckyFinances>[0]> = {})
   });
 }
 
+test("named savings goals resolve to that goal; unnamed questions list all goals", () => {
+  const a = analyze({
+    buckets: [bucket(), bucket({ id: "b2", name: "iPhone", targetMinor: 500000 })],
+    transactions: [
+      txn({ bucketId: "b1", type: "savings-deposit", amountMinor: 50000, description: "Save" }),
+      txn({ bucketId: "b2", type: "savings-deposit", amountMinor: 100000, description: "Save" }),
+    ],
+  });
+  const named = answerBuckyQuestion("How is my iPhone goal doing?", a);
+  assert.match(named.answer, /iPhone/);
+  assert.ok(named.facts.some((f) => f.label === "Saved"));
+  const all = answerBuckyQuestion("How are my savings goals doing?", a);
+  assert.match(all.answer, /2 savings goals/);
+  assert.match(all.answer, /Emergency Fund/);
+  assert.match(all.answer, /iPhone/);
+});
+
+test("salary expenses are totalled per person and never called payroll", () => {
+  const a = analyze({
+    profile: profile({ kind: "business", name: "Sari Store" }),
+    transactions: [
+      txn({ type: "expense", category: "Salaries", description: "Salary payment — Roger", amountMinor: 100000 }),
+      txn({ type: "expense", category: "Salaries", description: "Salary payment — Roger", amountMinor: 100000, date: "2026-10-06" }),
+      txn({ type: "expense", category: "Salaries", description: "Salary payment — Maria", amountMinor: 50000, date: "2026-10-06" }),
+    ],
+  });
+  const php = a.currencies.find((c) => c.currency === "PHP")!;
+  assert.equal(php.salaryExpenseMinor, 250000);
+  assert.equal(php.salaryPaymentCount, 3);
+  const ans = answerBuckyQuestion("How much salary did I pay?", a);
+  assert.match(ans.answer, /salary payments recorded as expenses/i);
+  assert.ok(ans.facts.some((f) => f.label === "Roger"));
+  assert.ok(a.limitations.some((l) => l.includes("does not run payroll")));
+  const none = answerBuckyQuestion("How much salary did I pay?", analyze());
+  assert.equal(none.insufficientData, true);
+});
+
+test("grounded salary questions: per person, per month, and highest paid", () => {
+  const a = analyze({
+    profile: profile({ kind: "business", name: "Sari Store" }),
+    transactions: [
+      txn({ type: "expense", category: "Salaries", description: "Salary payment — Roger", amountMinor: 100000, date: "2026-10-01" }),
+      txn({ type: "expense", category: "Salaries", description: "Salary payment — Roger", amountMinor: 100000, date: "2026-10-05" }),
+      txn({ type: "expense", category: "Bonuses", description: "Bonus payment — Maria", amountMinor: 50000, date: "2026-10-06" }),
+    ],
+    now: new Date("2026-10-15T12:00:00.000Z"),
+  });
+  const roger = answerBuckyQuestion("How much did I pay Roger this month?", a);
+  assert.match(roger.answer, /Roger/);
+  assert.ok(roger.facts.some((f) => f.value.includes("2,000") || f.value.includes("2000") || f.value.includes("₱")));
+  const month = answerBuckyQuestion("Show my salary expenses for October", a);
+  assert.match(month.answer, /salary expenses for 2026-10/i);
+  const highest = answerBuckyQuestion("Which employee received the highest recorded payments?", a);
+  assert.match(highest.answer, /Roger/);
+  const nobody = answerBuckyQuestion("How much did I pay Nobody this month?", a);
+  // Unknown names fall back to the recorded salary overview, never invented.
+  assert.equal(nobody.insufficientData, false);
+});
+
+test("over-target savings report the true achievement and excess", () => {
+  const a = analyze({
+    buckets: [bucket({ targetMinor: 100000 })],
+    transactions: [txn({ bucketId: "b1", type: "savings-deposit", amountMinor: 110000, description: "Save" })],
+  });
+  const savings = a.insights.find((i) => i.kind === "savings")!;
+  assert.match(savings.title, /110% of goal/);
+  assert.ok(savings.evidence.some((e) => e.label === "Above target"));
+  const ans = answerBuckyQuestion("How is my Emergency Fund goal doing?", a);
+  assert.match(ans.answer, /110% of goal/);
+});
+
 test("empty records: honest empty state, profile currency, scan proposal, insufficient answer", () => {
   const a = analyze();
   assert.equal(a.hasAnyData, false);

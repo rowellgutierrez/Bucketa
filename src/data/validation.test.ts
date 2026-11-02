@@ -144,7 +144,16 @@ test("savings deposits accumulate, withdrawals reduce, and overdrafts are blocke
   // Repeated ₱10,000 deposits accumulate instead of overwriting.
   const deposits = [txn("d1", "savings-deposit", 1000000), txn("d2", "savings-deposit", 1000000)];
   assert.equal(bucketSavedMinor(deposits, bucket), 2000000);
-  assert.deepEqual(bucketGoalProgress(deposits, bucket), { savedMinor: 2000000, percent: 40 });
+  assert.deepEqual(bucketGoalProgress(deposits, bucket), {
+    savedMinor: 2000000, percent: 40, actualPercent: 40, overTargetMinor: 0,
+  });
+  // Over-target: the visual percent stays capped at 100, but the true
+  // achievement (₱20,000 vs a ₱15,000 target = 133%) and the ₱5,000 excess
+  // are reported honestly.
+  const over = bucketGoalProgress(deposits, { ...bucket, targetMinor: 1500000 });
+  assert.equal(over?.percent, 100);
+  assert.ok(Math.abs((over?.actualPercent ?? 0) - 133.333) < 0.01);
+  assert.equal(over?.overTargetMinor, 500000);
   assert.equal(validateTransaction(deposits[0]).type, "savings-deposit");
 
   // A ₱5,000 withdrawal reduces the saved amount and the goal percentage.
@@ -161,8 +170,7 @@ test("savings deposits accumulate, withdrawals reduce, and overdrafts are blocke
   assert.match(savingsMovementError(afterWithdrawal, bucket, "savings-deposit", 0) ?? "", /greater than zero/);
 
   // Currency separation: a USD deposit never fills a PHP goal, and vice versa.
-  const mixed = [...afterWithdrawal, txn("d-usd", "savings-deposit", 1000000, "USD")];
-  assert.equal(bucketSavedMinor(mixed, bucket), 1500000);
+  const mixed = [...afterWithdrawal, txn("d-usd", "savings-deposit", 1000000, "USD")];  assert.equal(bucketSavedMinor(mixed, bucket), 1500000);
   assert.equal(bucketSavedMinor(mixed, { id: "b-iphone", currency: "USD" }), 1000000);
 
   // Savings movements are not income, expenses, or net cash flow. Only the

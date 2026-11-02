@@ -43,17 +43,17 @@ export class BuckyApiError extends Error {
 }
 
 const OFFLINE_MESSAGE =
-  "The Bucky advisor backend could not be reached. Your calculated answer above still applies.";
-const GENERIC_MESSAGE = "The Bucky advisor request could not be completed. Your calculated answer above still applies.";
+  "The AI Insights backend could not be reached. Your calculated answer above still applies.";
+const GENERIC_MESSAGE = "The AI Insights request could not be completed. Your calculated answer above still applies.";
 
 const ERROR_MESSAGES: Record<string, string> = {
-  request_too_large: "That question is too long for the Bucky advisor.",
-  invalid_request: "The Bucky advisor could not understand that request.",
-  live_disabled: "Live Meta Bucky is not enabled on this server. The calculated answer still applies.",
-  live_unauthorized: "Live Meta Bucky was not authorized for this request.",
+  request_too_large: "That question is too long for AI Insights.",
+  invalid_request: "AI Insights could not understand that request.",
+  live_disabled: "Live AI is not enabled on this server. The calculated answer still applies.",
+  live_unauthorized: "Live AI was not authorized for this request.",
   live_limit_reached: "The live test request limit for this server session has been reached.",
-  meta_unavailable: "The Meta model could not be reached. The calculated answer still applies.",
-  not_found: "The Bucky advisor service was not found.",
+  meta_unavailable: "The AI model could not be reached. The calculated answer still applies.",
+  not_found: "The AI Insights service was not found.",
   internal_error: "Something went wrong on the server.",
 };
 
@@ -95,7 +95,7 @@ export async function requestBuckyAdvice(
     if (!token || token.trim().length === 0) {
       throw new BuckyApiError(
         "live_token_required",
-        "Enter the live test token provided by the local server operator before requesting a live Meta answer.",
+        "Enter the live test token provided by the local server operator before requesting a live AI answer.",
       );
     }
     headers["x-bucketa-live-test"] = token;
@@ -133,6 +133,116 @@ export async function requestBuckyAdvice(
     throw new BuckyApiError(code || "bucky_error", ERROR_MESSAGES[code] ?? GENERIC_MESSAGE, response.status);
   }
   if (!isAdviceResponse(payload)) {
+    throw new BuckyApiError("invalid_response", GENERIC_MESSAGE);
+  }
+  return payload;
+}
+
+/**
+ * Phase D — model-assisted interpretation client.
+ *
+ * Sends ONLY the user's request text plus the names of their real savings
+ * goals and employees (no records, no amounts, no rates). The server-side
+ * model can only return a structured proposal; the caller must still
+ * cross-check it locally (buildActionFromModelProposal) and show the
+ * standard preview before anything can be saved. Live-only: without an
+ * explicit token this fails before any network call, and the
+ * deterministic interpreter remains the fallback.
+ */
+export interface BuckyInterpretContext {
+  profileName: string;
+  profileKind: "personal" | "business";
+  currency: string;
+  bucketNames: string[];
+  employeeNames: string[];
+}
+
+export interface BuckyInterpretProposal {
+  kind: string;
+  amountMinor: number;
+  date: string;
+  description: string | null;
+  category: string | null;
+  bucketName: string | null;
+  employeeName: string | null;
+  paymentType: "salary" | "bonus" | "advance" | null;
+}
+
+export interface BuckyInterpretResponse {
+  source: "meta-live" | "deterministic";
+  model: string | null;
+  proposal: BuckyInterpretProposal | null;
+  diagnostic?: { category: string; upstreamStatus: number | null; subReason?: string | null };
+}
+
+function isInterpretProposal(value: unknown): value is BuckyInterpretProposal {
+  if (!value || typeof value !== "object") return false;
+  const p = value as Record<string, unknown>;
+  const nullableString = (v: unknown) => v === null || typeof v === "string";
+  return (
+    typeof p.kind === "string" &&
+    Number.isSafeInteger(p.amountMinor) &&
+    typeof p.date === "string" &&
+    nullableString(p.description) &&
+    nullableString(p.category) &&
+    nullableString(p.bucketName) &&
+    nullableString(p.employeeName) &&
+    (p.paymentType === null || p.paymentType === "salary" || p.paymentType === "bonus" || p.paymentType === "advance")
+  );
+}
+
+function isInterpretResponse(payload: unknown): payload is BuckyInterpretResponse {
+  if (!payload || typeof payload !== "object") return false;
+  const r = payload as Record<string, unknown>;
+  return (
+    (r.source === "meta-live" || r.source === "deterministic") &&
+    (r.model === null || typeof r.model === "string") &&
+    (r.proposal === null || isInterpretProposal(r.proposal))
+  );
+}
+
+export async function requestBuckyInterpret(
+  text: string,
+  context: BuckyInterpretContext,
+  options: { liveTestToken?: string } = {},
+): Promise<BuckyInterpretResponse> {
+  const token = options.liveTestToken;
+  if (!token || token.trim().length === 0) {
+    throw new BuckyApiError(
+      "live_token_required",
+      "Enter the live test token provided by the local server operator before requesting a live AI interpretation.",
+    );
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35_000);
+  let response: Response;
+  try {
+    response = await fetch("/api/bucky/interpret", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-bucketa-live-test": token },
+      body: JSON.stringify({ text, mode: "live", context }),
+      signal: controller.signal,
+    });
+  } catch {
+    throw new BuckyApiError("backend_offline", OFFLINE_MESSAGE);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const code =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error: unknown }).error)
+        : "";
+    throw new BuckyApiError(code || "bucky_error", ERROR_MESSAGES[code] ?? GENERIC_MESSAGE, response.status);
+  }
+  if (!isInterpretResponse(payload)) {
     throw new BuckyApiError("invalid_response", GENERIC_MESSAGE);
   }
   return payload;

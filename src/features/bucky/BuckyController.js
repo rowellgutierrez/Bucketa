@@ -43,6 +43,11 @@ export class BuckyController {
  update(dt){if(this.disposed)return;if(!Number.isFinite(dt)||dt<0)throw new RangeError('Invalid elapsed time');
   this.savings.update(dt);this.surface.update(this.savings.current);
   const step=this.paused||this.reducedMotion?0:dt*this.speed;this.age+=step;this.fadeAge+=step;this.blinkClock+=step;this.talkTime=(this.talkTime||0)+step;this.gestureTime=(this.gestureTime||0)+step;
+  // One-shot reactions (Wave, Emotion_Happy, Celebration…) return to
+  // Idle when they finish instead of freezing on their last frame or
+  // looping forever. Looping clips (Idle, Listening, Thinking…) are
+  // untouched.
+  if(!this.loop&&this.clip&&this.clip.name!=='Idle'&&this.age>=this.clip.duration)this.play('Idle');
   const result=new Map([...this.bindings].map(([k,b])=>[k,b.rest.slice()]));
   if(!this.reducedMotion){
    for(const [k,v]of this.sample(this.clip,this.loop?this.age%this.clip.duration:Math.min(this.age,this.clip.duration)))result.set(k,v);

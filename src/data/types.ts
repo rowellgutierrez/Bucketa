@@ -78,13 +78,27 @@ export interface Product {
   updatedAt: string;
 }
 
+export type SalaryFrequency = "weekly" | "biweekly" | "monthly" | "custom";
+
 export interface Employee {
   id: string;
   /** Owning business profile. */
   profileId: string;
   name: string;
+  /** Position / job title. */
   role: string | null;
+  /** "inactive" is the archived state: history is preserved and the
+   * employee can be restored at any time. */
   status: "active" | "inactive";
+  /** Optional employment details. All optional so records saved before
+   * these fields existed need no migration (IndexedDB is schemaless). */
+  startDate?: string | null;
+  contact?: string | null;
+  /** Agreed salary rate in minor units of `currency`. A rate is an
+   * agreement, never money already paid — payments are transactions. */
+  salaryRateMinor?: MinorUnits | null;
+  salaryFrequency?: SalaryFrequency | null;
+  currency?: CurrencyCode | null;
   createdAt: string;
   updatedAt: string;
 }

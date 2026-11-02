@@ -1,4 +1,4 @@
-import { historyHref, parseHistoryScope, selectHistory, type HistoryScope } from "./historyScope.ts";
+import { historyHref, parseHistoryScope, personalHrefForProfile, profileIdFromHash, selectHistory, transactionsHrefForProfile, type HistoryScope } from "./historyScope.ts";
 import type { Profile, Transaction, TransactionType } from "../data/types.ts";
 
 const assert: { equal(a: unknown, b: unknown): void; deepEqual(a: unknown, b: unknown): void; ok(a: unknown): void } = (await import("node:" + "assert/strict")).default;
@@ -49,4 +49,22 @@ test("selection preserves records, amounts, order and savings semantics", () => 
   assert.equal(selected.find(t => t.id === "a"), records[0]);
   assert.equal(records[0].amountMinor, 10000);
   assert.equal(records[0].type, "savings-withdrawal");
+});
+test("scanner-to-transactions link carries the source business by stable ID", () => {
+  const href = transactionsHrefForProfile("biz-usd-1");
+  assert.equal(href, "#/transactions?profileId=biz-usd-1");
+  assert.equal(profileIdFromHash(href), "biz-usd-1");
+  // IDs are encoded, never inferred from a display name.
+  assert.equal(profileIdFromHash(transactionsHrefForProfile("a b&c")), "a b&c");
+  assert.equal(profileIdFromHash(personalHrefForProfile("personal")), "personal");
+  // The USD business context stays isolated: selecting by ID keeps the
+  // other businesses' records out of the business scope.
+  assert.deepEqual(selectHistory(records, profiles, context("business", "usd")).records.map(t => t.id), ["d"]);
+});
+test("hashes without an explicit profile keep the default selection", () => {
+  assert.equal(profileIdFromHash("#/transactions"), null);
+  assert.equal(profileIdFromHash("#/transactions?history=1&scope=business&profileId=business"), null);
+  assert.equal(profileIdFromHash("#/transactions?profileId="), null);
+  assert.equal(profileIdFromHash("#/transactions?profileId=a&profileId=b"), null);
+  assert.equal(profileIdFromHash("#/transactions?profileId=a&extra=1"), null);
 });

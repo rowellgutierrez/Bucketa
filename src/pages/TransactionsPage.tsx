@@ -1,7 +1,8 @@
-import { parseHistoryScope, selectHistory, type HistoryRequest } from "../lib/historyScope";
+import { parseHistoryScope, profileIdFromHash, selectHistory, type HistoryRequest } from "../lib/historyScope";
+import { onRecordsChanged } from "../lib/dataChange";
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { transactionDisplay } from "../lib/transactionDisplay";
+import TransactionRow from "../components/TransactionRow";
 import Icon from "../components/ui/Icon";
 import { bucketsRepo, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Profile, Transaction } from "../data/types";
@@ -75,7 +76,7 @@ interface CurrencySummary {
   net: number;
 }
 
-function BusinessTransactionsPage() {
+function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfileId?: string }) {
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -187,9 +188,24 @@ function BusinessTransactionsPage() {
   }
 
   useEffect(() => {
-    void load();
+    void load(preferredProfileId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A confirmed Bucky save elsewhere (e.g. the floating dock over this
+  // page) notifies here: silently re-read the currently selected business
+  // so counts and totals update without a reload, preserving the active
+  // business, form, and scroll state.
+  useEffect(() => {
+    if (!profileId) return;
+    return onRecordsChanged(() => {
+      void loadBusinessData(profileId).catch(() => {
+        // Keep showing the last loaded records if a refresh fails; the
+        // saved record itself is already committed.
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
 
   function resetForm(nextCurrency: string) {
     setEditingId("");
@@ -793,30 +809,19 @@ function BusinessTransactionsPage() {
               <ul className="txn-list">
                 {transactions.map((txn) => {
                   const editable = isCorrectableTransaction(txn);
-                      const display = transactionDisplay(txn.type);
                   const assignedBucket = bucketName(txn.bucketId);
                   return (
-                    <li key={txn.id} className="txn-row" data-kind={txn.type}>
-                          <span className="record-icon"><Icon name={display.icon} /></span>
-                      <div className="txn-main">
-                        <strong>{txn.description}</strong>
-                        <p className="muted bucket-meta">
-                          {formatDate(txn.date)} · <span className="txn-type" title={display.context}>{display.label}</span>
-                          {txn.category ? ` · ${txn.category}` : ""}
-                          {assignedBucket ? ` · ${assignedBucket}` : ""}
-                          {txn.origin === "scanner-confirmed"
-                            ? " · Scanned record"
-                            : !editable
-                              ? ` · ${txn.origin}`
-                              : ""}
-                        </p>
-                      </div>
-                      <div className="txn-value">
-                            <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
-                              {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
-                            </span>
-                            <span className="txn-direction">{display.context}</span>
-                          </div>
+                    <TransactionRow
+                      key={txn.id}
+                      txn={txn}
+                      dateLabel={formatDate(txn.date)}
+                      amountLabel={formatMoney(txn.amountMinor, txn.currency)}
+                      meta={<>
+                        {txn.category && <span>{txn.category}</span>}
+                        {assignedBucket && <span>{assignedBucket}</span>}
+                        {txn.origin === "scanner-confirmed" && <span>Scanned record</span>}
+                      </>}
+                    >
                       {editable ? (
                         <div className="row-actions txn-actions">
                           <button
@@ -840,7 +845,7 @@ function BusinessTransactionsPage() {
                       ) : (
                         <span className="muted txn-locked">Managed elsewhere</span>
                       )}
-                    </li>
+                    </TransactionRow>
                   );
                 })}
               </ul>
@@ -862,13 +867,128 @@ export default function TransactionsPage() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   const request = useMemo(() => parseHistoryScope(hash), [hash]);
-  return request ? <FullHistory key={hash} request={request} /> : <BusinessTransactionsPage />;
+  const preferredProfileId = profileIdFromHash(hash);
+  // An explicit ?profileId= link (e.g. "View saved records" from the
+  // scanner) wins over the default first-business selection.
+  if (preferredProfileId) {
+    return <BusinessTransactionsPage key={preferredProfileId} preferredProfileId={preferredProfileId} />;
+  }
+  return request ? <FullHistory key={hash} request={request} /> : <UnifiedTransactions />;
+}
+
+type TxnScopeTab = "all" | "business" | "personal";
+
+/**
+ * One Transactions page with All / Business / Personal scope tabs.
+ * Business keeps the full management view unchanged; All and Personal are
+ * read-only chronological lists reusing the shared transaction row. Rows
+ * keep their own profile and currency — records are never merged into
+ * combined totals — and savings rows keep their signed display.
+ */
+function UnifiedTransactions() {
+  const [scope, setScope] = useState<TxnScopeTab>("all");
+  return (
+    <>
+      <div className="txn-scope-tabs" role="tablist" aria-label="Transaction scope">
+        {(["all", "business", "personal"] as TxnScopeTab[]).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected={scope === tab}
+            className={scope === tab ? "type-option on" : "type-option"}
+            onClick={() => setScope(tab)}
+          >
+            {tab === "all" ? "All" : tab === "business" ? "Business" : "Personal"}
+          </button>
+        ))}
+      </div>
+      {scope === "business" ? <BusinessTransactionsPage /> : <CombinedRecords key={scope} scope={scope} />}
+    </>
+  );
+}
+
+function CombinedRecords({ scope }: { scope: "all" | "personal" }) {
+  const [data, setData] = useState<{ profiles: Profile[]; buckets: Bucket[]; records: Transaction[] } | null>(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  // Confirmed saves elsewhere refresh these read-only lists in place.
+  useEffect(() => onRecordsChanged(() => setAttempt((n) => n + 1)), []);
+  useEffect(() => {
+    let active = true;
+    setError("");
+    Promise.all([profilesRepo.listAll(), bucketsRepo.listAll(), transactionsRepo.listAll()])
+      .then(([profiles, buckets, records]) => { if (active) setData({ profiles, buckets, records }); })
+      .catch((reason) => { if (active) setError(errorMessage(reason)); });
+    return () => { active = false; };
+  }, [attempt]);
+
+  const profileById = new Map(data?.profiles.map((p) => [p.id, p]) ?? []);
+  const records = (data?.records ?? [])
+    .filter((txn) => scope === "all" || profileById.get(txn.profileId)?.kind === "personal")
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+
+  return (
+    <section className="page transactions-page">
+      <PageHeader
+        className="workspace-page-header"
+        eyebrow="TRACK MONEY"
+        title="Transactions"
+        description={scope === "all"
+          ? "Every record across your business and personal profiles, newest first. Each row keeps its own profile and currency — nothing is totalled together."
+          : "Your personal records, newest first. Read-only here — manage them in Personal Finance."}
+      />
+      {error ? (
+        <div className="card feedback-error">
+          <p className="alert-error" role="alert">{error}</p>
+          <button className="btn" type="button" onClick={() => setAttempt((n) => n + 1)}>Retry</button>
+        </div>
+      ) : !data ? (
+        <div className="card loading-state" role="status">Loading records…</div>
+      ) : (
+        <section className="panel txn-history" aria-label={scope === "all" ? "All records" : "Personal records"}>
+          <div className="panel-head">
+            <h2>{scope === "all" ? "All records" : "Personal records"}</h2>
+            <span className="count-badge">{records.length} {records.length === 1 ? "record" : "records"}</span>
+          </div>
+          {records.length === 0 ? (
+            <div className="empty-state">
+              <p>{scope === "all"
+                ? "No records yet. Add a business transaction, or record something in Personal Finance."
+                : "No personal records yet. Add income, expenses, or savings in Personal Finance."}</p>
+            </div>
+          ) : (
+            <ul className="txn-list">{records.map((txn) => {
+              const profile = profileById.get(txn.profileId);
+              const bucket = data.buckets.find((b) => b.id === txn.bucketId);
+              return (
+                <TransactionRow
+                  key={txn.id}
+                  txn={txn}
+                  dateLabel={formatDate(txn.date)}
+                  amountLabel={formatMoney(txn.amountMinor, txn.currency)}
+                  meta={<>
+                    {profile && <span>{profile.name}</span>}
+                    {profile && <span>{profile.kind === "personal" ? "Personal" : "Business"}</span>}
+                    {bucket && <span>{bucket.name}</span>}
+                    {txn.category && <span>{txn.category}</span>}
+                  </>}
+                />
+              );
+            })}</ul>
+          )}
+        </section>
+      )}
+    </section>
+  );
 }
 
 function FullHistory({ request }: { request: HistoryRequest }) {
   const [data, setData] = useState<{ profiles: Profile[]; buckets: Bucket[]; records: Transaction[] } | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  // Confirmed saves elsewhere refresh this read-only history in place.
+  useEffect(() => onRecordsChanged(() => setAttempt((n) => n + 1)), []);
   useEffect(() => {
     if (!request.context) return;
     let active = true;
@@ -897,17 +1017,18 @@ function FullHistory({ request }: { request: HistoryRequest }) {
         <div className="panel-head"><h2 id="full-history-heading">All matching activity</h2><span className="count-badge">{selection?.records.length ?? 0} {selection?.records.length === 1 ? "record" : "records"}</span></div>
         {!selection?.records.length ? <div className="empty-state"><p>No records match this selection.</p><a href="#/dashboard">Choose different Home filters</a></div>
           : <ul className="txn-list">{selection.records.map(txn => {
-            const display = transactionDisplay(txn.type);
             const bucket = data.buckets.find(b => b.id === txn.bucketId);
-            return <li key={txn.id} className="txn-row" data-kind={txn.type}>
-              <span className="record-icon"><Icon name={display.icon} /></span>
-              <div className="txn-main"><strong>{txn.description}</strong><p className="muted bucket-meta">
-                <span className="txn-type" title={display.context}>{display.label}</span>
-                <span>{formatDate(txn.date)} · {data.profiles.find(p => p.id === txn.profileId)?.name}</span>
-                {bucket && <span>{bucket.name}</span>}{txn.category && <span>{txn.category}</span>}
-              </p></div>
-              <div className="txn-value"><span className={"txn-amount " + display.amountClass} aria-label={display.context + ": " + display.sign + formatMoney(txn.amountMinor, txn.currency)}>{display.sign}{formatMoney(txn.amountMinor, txn.currency)}</span><span className="txn-direction">{txn.currency} · {display.context}</span></div>
-            </li>;
+            return <TransactionRow
+              key={txn.id}
+              txn={txn}
+              dateLabel={formatDate(txn.date)}
+              amountLabel={formatMoney(txn.amountMinor, txn.currency)}
+              meta={<>
+                <span>{data.profiles.find(p => p.id === txn.profileId)?.name}</span>
+                {bucket && <span>{bucket.name}</span>}
+                {txn.category && <span>{txn.category}</span>}
+              </>}
+            />;
           })}</ul>}
       </section>}
   </section>;

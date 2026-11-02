@@ -473,8 +473,14 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
 }
 @media (max-width:640px){
   /* Scanner setup selectors stack full-width so selected values are
-     never truncated on narrow screens (scanner-scoped only). */
-  .scanner-form .form-row{flex-direction:column}
+     never truncated on narrow screens (scanner-scoped only). The
+     row layout's flex-basis (flex:1 1 200px, for side-by-side fields)
+     must be reset here: in a column it becomes a 200px *height* per
+     field, which is the excessive empty space between Profile,
+     Bucket and Record Type. Fields size to their content instead. */
+  .scanner-form .form-row{flex-direction:column;gap:10px}
+  .scanner-form .form-row>.field{flex:0 0 auto}
+  .scanner-form{gap:10px}
 }
 /* Phase 1: shared foundation. Screen-only rules leave receipt/report printing intact. */
 @media screen {
@@ -1131,3 +1137,218 @@ body{margin:0;font-family:var(--bk-font-body);background:var(--bk-bg);color:var(
 }
 
 @media screen { .full-history-page a:not(.btn),.full-history-page a:not(.btn):visited{color:var(--bk-accent-text)} }
+
+/* Bucky Voice (Phase 1) + app-wide Bucky dock. Ember tokens only. */
+.bucky-mic-btn{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.bucky-mic-btn svg{width:19px;height:19px}
+.bucky-mic-btn.is-listening{background:var(--bk-accent,#c2410c);color:#fff;border-color:transparent;animation:bucky-mic-pulse 1.6s ease-in-out infinite}
+@keyframes bucky-mic-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--bk-accent,#c2410c) 45%,transparent)}50%{box-shadow:0 0 0 7px transparent}}
+@media (prefers-reduced-motion: reduce){.bucky-mic-btn.is-listening{animation:none}}
+.bucky-voice-controls{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.bucky-voice-controls .btn{display:inline-flex;align-items:center;gap:6px}
+.bucky-voice-controls svg{width:17px;height:17px}
+.bucky-voice-status{font-size:12px;color:var(--bk-text-2)}
+.bucky-voice-interim{font-size:13px;color:var(--bk-text-2);font-style:italic;margin:0;overflow-wrap:anywhere}
+.bucky-voice-note{font-size:12px;margin:0}
+.bucky-voice-settings{font-size:13px;color:var(--bk-text-2)}
+.bucky-voice-settings summary{cursor:pointer;padding:4px 2px}
+.bucky-voice-sliders{display:flex;flex-wrap:wrap;gap:12px;align-items:end;padding:6px 2px}
+.bucky-voice-sliders label{display:flex;flex-direction:column;gap:4px;font-size:12px}
+.bucky-voice-sliders input[type="range"]{width:120px;accent-color:var(--bk-accent,#c2410c)}
+.bucky-voice-settings p{margin:4px 2px;font-size:12px}
+.bucky-interpret-note{border:1px dashed var(--bk-border);border-radius:var(--bk-radius);padding:12px 14px;display:flex;flex-direction:column;gap:8px;background:var(--bk-surface-2)}
+.bucky-interpret-note p{margin:0}
+.bucky-answer .row-actions .btn,.bucky-advisor .row-actions .btn{display:inline-flex;align-items:center;gap:6px}
+.bucky-answer .row-actions svg,.bucky-advisor .row-actions svg{width:16px;height:16px}
+.bucky-dock-launcher{position:fixed;right:18px;bottom:22px;z-index:30;display:inline-flex;align-items:center;gap:8px;padding:12px 18px;border-radius:999px;border:1px solid var(--bk-border);background:var(--bk-accent,#c2410c);color:#fff;font:inherit;font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 10px 28px -10px rgb(0 0 0/.45)}
+.bucky-dock-launcher svg{width:19px;height:19px}
+.bucky-dock-launcher:hover{filter:brightness(1.07)}
+.bucky-dock-launcher:focus-visible{outline:3px solid var(--bk-blue-500,#3b82f6);outline-offset:2px}
+.bucky-dock-launcher--mascot{padding:6px 16px 6px 6px;gap:10px;border-radius:999px}
+.bucky-dock-launcher--mascot .bucky-mascot{width:52px;height:52px;flex:0 0 auto}
+.bucky-dock-launcher--mascot span{font-size:15px;letter-spacing:.01em}
+@media (max-width:760px){
+  .bucky-dock-launcher--mascot{padding:5px 13px 5px 5px}
+  .bucky-dock-launcher--mascot .bucky-mascot{width:44px;height:44px}
+}
+.bucky-dock-dialog{width:min(620px,calc(100vw - 24px));max-height:min(88dvh,900px);overflow:auto;border:1px solid var(--bk-border);border-radius:20px;background:var(--bk-surface);color:var(--bk-text);padding:20px}
+.bucky-dock-dialog::backdrop{background:rgb(0 0 0/.5)}
+.bucky-dock-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.bucky-dock-head h2{margin:0;font-size:18px}
+.bucky-dock-dialog .bucky-panel{margin:0;box-shadow:none;border:0;padding:0}
+@media (max-width:760px){
+  .bucky-dock-launcher{bottom:calc(76px + env(safe-area-inset-bottom,0px));right:12px;padding:11px 15px;font-size:13px}
+  .bucky-dock-dialog{padding:16px}
+}
+/* Bookkeeping action preview: the confirmation gate for every Bucky write. */
+.bucky-action-preview{border:1px solid var(--bk-accent,#c2410c);border-radius:var(--bk-radius);padding:14px;background:var(--bk-surface-2);display:flex;flex-direction:column;gap:10px}
+.bucky-action-preview h3{margin:0;font-size:15px}
+.bucky-action-preview p{margin:0}
+.bucky-action-preview .row-actions .btn{display:inline-flex;align-items:center;gap:6px}
+.bucky-action-warnings{margin:0;padding-left:18px;font-size:13px;color:var(--bk-text-2);overflow-wrap:anywhere}
+.bucky-action-saved{border-color:var(--bk-accent,#c2410c)}
+
+/* Phase A UI/UX: compact Bucky, functional Settings, compact scanner rows. */
+.bucky-intro-line{margin:0;font-size:13px}
+.bucky-panel .bucky-stage{min-height:0;padding:10px}
+.bucky-panel .bucky-stage .bucky-mascot{width:112px;height:112px}
+.settings-page{display:flex;flex-direction:column;gap:16px;min-width:0}
+.settings-card{display:flex;flex-direction:column;gap:16px;padding:20px}
+.settings-card h2{margin:0}
+.settings-card p{margin:0}
+.settings-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid var(--bk-border);padding-top:14px}
+.settings-row p{margin-top:4px}
+.settings-sliders{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px 20px}
+.settings-sliders label{display:flex;flex-direction:column;gap:8px;font-weight:700;font-size:14px;min-width:0}
+.settings-sliders label>span{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.settings-sliders output{font-variant-numeric:tabular-nums;color:var(--bk-accent-text)}
+.settings-sliders input[type="range"]{width:100%;min-height:32px;accent-color:var(--bk-accent,#c2410c)}
+.scanner-page .scanner-entry-head{padding:5px 8px}
+.scanner-page .scanner-entry-body{padding:10px 12px 12px;gap:10px 12px}
+.scanner-page .scanner-date-group-card{padding:8px 10px}
+.scanner-page .scanner-totals div{padding:9px}
+@media (max-width:640px){
+  .settings-card{padding:16px}
+  .settings-sliders{grid-template-columns:1fr}
+  .bucky-panel .bucky-stage .bucky-mascot{width:96px;height:96px}
+  .scanner-page .scanner-entry-toggle{flex-wrap:wrap;row-gap:4px}
+}
+
+/* Phase A QA fixes: the floating Bucky launcher must never cover the
+   bottom navigation (visible up to 1023px, 64px tall plus safe-area) or
+   trap page content beneath it on small screens. */
+@media (max-width:1023px){
+  .bucky-dock-launcher{bottom:calc(76px + env(safe-area-inset-bottom,0px));right:12px}
+}
+@media (max-width:640px){
+  .bucky-dock-launcher--mascot{padding:4px 12px 4px 4px;gap:7px}
+  .bucky-dock-launcher--mascot .bucky-mascot{width:38px;height:38px}
+  .bucky-dock-launcher--mascot span{font-size:13px}
+  /* Extra scroll room so the last control on a page (e.g. the Settings
+     Pitch slider) can always be scrolled clear of the fixed launcher
+     and the bottom navigation. */
+  .premium-shell .content{padding-bottom:calc(180px + env(safe-area-inset-bottom,0px))}
+}
+
+/* Phase B: compact transaction rows, prominent Bucky, voice review,
+   in-app scanner camera, and tighter previews. */
+/* B1 — one shared compact row: icon | description + type/date/category |
+   right-aligned signed amount. The accounting context stays in the
+   amount's aria-label and the type pill's tooltip, not a third line. */
+.txn-row{display:flex;align-items:center;gap:10px;padding:9px 2px;flex-wrap:nowrap}
+.premium-dashboard .txn-row,.personal-page .txn-row,.transactions-page .txn-row,.full-history-page .txn-row{display:flex;align-items:center;padding:9px 2px}
+.premium-dashboard .txn-value,.personal-page .txn-value,.transactions-page .txn-value,.full-history-page .txn-value{grid-column:auto;align-items:flex-end;margin-left:auto;max-width:48%;text-align:right}
+.txn-row .txn-main{flex:1 1 auto;min-width:0}
+.txn-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 7px;margin-top:2px;font-size:12px}
+.txn-value{flex:none;margin-left:auto;text-align:right}
+.txn-amount{font-variant-numeric:tabular-nums;white-space:nowrap}
+.txn-actions{flex:none;margin-left:0}
+.personal-page .txn-row,.transactions-page .txn-row{flex-wrap:wrap}
+.personal-page .txn-actions,.transactions-page .txn-actions,
+.personal-page .txn-locked,.transactions-page .txn-locked{margin-left:42px}
+.full-history-page .txn-row{display:flex}
+/* B2 — Bucky stands on the panel itself: no rectangular stage, ring, or
+   status caption; a larger mascot, tighter panel rhythm. */
+.bucky-hero{display:flex;justify-content:center;align-items:center;padding:2px 0 0;background:none;border:0}
+.bucky-hero .bucky-mascot{width:216px;height:216px;max-width:72vw;max-height:72vw}
+.bucky-panel{gap:12px}
+.home-page .bucky-panel{grid-template-columns:232px minmax(0,1fr);gap:12px 18px}
+.home-page .bucky-interactions{gap:10px}
+.bucky-dock-dialog .bucky-hero .bucky-mascot{width:192px;height:192px}
+.bucky-voice-review{border:1px solid var(--bk-border);border-radius:var(--bk-radius);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--bk-surface-2)}
+.bucky-voice-review p{margin:0;overflow-wrap:anywhere}
+/* B4 — in-app camera: live preview / captured frame, capped so the
+   review controls below stay reachable. */
+.scanner-camera{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--bk-border);padding-top:12px}
+.scanner-camera p{margin:0}
+.scanner-camera-preview{width:100%;max-height:320px;aspect-ratio:4/3;object-fit:cover;background:#000;border:1px solid var(--bk-border);border-radius:var(--bk-radius);display:block}
+/* B5 — scanner result preview is confirmation, not the focus. */
+.scanner-page .scanner-preview img{max-height:240px}
+@media (max-width:768px){
+  .home-page .bucky-panel{grid-template-columns:minmax(0,1fr)}
+  .bucky-hero .bucky-mascot{width:176px;height:176px}
+  .bucky-dock-dialog .bucky-hero .bucky-mascot{width:168px;height:168px}
+}
+@media (max-width:640px){
+  .txn-row{padding:8px 0;gap:8px}
+  .txn-amount{white-space:normal;overflow-wrap:anywhere}
+  .scanner-camera-preview{max-height:260px}
+}
+
+/* PB-01 — mobile transaction rows must stay on one line. Older page and
+   breakpoint rules turned the shared row into a wrapping flex/grid stack
+   (icon, details, then amount on separate lines, up to ~220px tall).
+   This final block pins the shared row to a three-column grid at small
+   widths: icon | name/type/date | right-aligned signed amount. Only the
+   Edit/Delete or locked-state affordance may take a second line, tucked
+   under the details. Scoped to the contexts that render TransactionRow. */
+@media (max-width:640px){
+  .txn-row,
+  .premium-dashboard .txn-row,
+  .personal-page .txn-row,
+  .transactions-page .txn-row,
+  .full-history-page .txn-row{
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    column-gap:10px;
+    row-gap:6px;
+    align-items:center;
+    padding:8px 0;
+  }
+  .txn-row>.record-icon{grid-column:1;grid-row:1;width:32px;height:32px;align-self:center}
+  .txn-row>.txn-main{grid-column:2;grid-row:1;min-width:0;overflow-wrap:anywhere}
+  .txn-row>.txn-value{
+    grid-column:3;grid-row:1;
+    justify-self:end;align-items:flex-end;
+    margin:0;max-width:none;text-align:right;
+  }
+  .txn-row>.txn-value .txn-amount{white-space:nowrap;overflow-wrap:normal}
+  .txn-row>.txn-actions,
+  .txn-row>.txn-locked{grid-column:2/-1;grid-row:2;margin:0;justify-self:start}
+}
+
+/* Checkpoint 1 — compact Bucky toolbar, de-boxed panel regions, and the
+   Business → Personal records link. Mascot and heading sizes are
+   unchanged; only stacked full-width buttons, nested rectangular
+   containers, and repeated padding are reduced. The action preview
+   keeps its distinct bordered region — it is the confirmation
+   safeguard, not decoration. */
+.personal-records-link{margin:0;font-size:13px;overflow-wrap:anywhere}
+.bucky-answer{border:0;background:transparent;padding:8px 0}
+.bucky-insight{border:0;border-left:3px solid var(--bk-blue-500);background:transparent;padding:8px 10px}
+.bucky-interpret-note{border:0;background:transparent;padding:8px 0}
+.bucky-voice-review{padding:8px 10px}
+@media (max-width:768px){
+  /* One wrapping toolbar: input on its own line, Run / Speak / Scan
+     sharing the next line instead of three full-width stacked buttons. */
+  .bucky-ask-row,
+  .home-page .bucky-ask-row{flex-direction:row;flex-wrap:wrap}
+  .bucky-ask-row .input,
+  .home-page .bucky-ask-row .input{flex:1 1 100%;width:100%}
+  .bucky-ask-row .btn,
+  .home-page .bucky-ask-row .btn{width:auto;flex:1 1 auto}
+  .premium-dashboard .bucky-panel{padding:16px;gap:10px}
+}
+
+/* Final UX pass — scanner setup fields: the premium-shell rule
+   `.premium-shell .form-row>.field{flex:1 1 200px}` (later in this file,
+   equal specificity) was defeating the ≤640px scanner fix above, so in
+   the stacked column each field became a ~200px-tall box. This
+   higher-specificity scanner-scoped rule wins regardless of order. */
+@media (max-width:640px){
+  .scanner-page .scanner-form .form-row{flex-direction:column;gap:10px}
+  .scanner-page .scanner-form .form-row>.field{flex:0 0 auto;width:100%}
+  .scanner-page .scanner-form{gap:10px}
+}
+
+/* Final UX pass — unified Transactions scope tabs (All / Business /
+   Personal) sit above the active view; the "Heard:" line keeps the
+   auto-processed voice transcript visible with Correct/Retry actions. */
+.txn-scope-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}
+.bucky-voice-heard{padding:8px 10px}
+.bucky-voice-heard p{margin:0 0 8px;overflow-wrap:anywhere}
+
+/* Checkpoint B — the existing scanner workflow embedded in the
+   floating Bucky dialog: a slightly wider sheet, workflow unchanged. */
+.bucky-dock-dialog--scan{width:min(780px,calc(100vw - 24px))}
+.scanner-embedded{min-width:0}

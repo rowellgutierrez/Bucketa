@@ -1,7 +1,6 @@
 import PageHeader from "../components/ui/PageHeader";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { transactionDisplay } from "../lib/transactionDisplay";
-import Icon from "../components/ui/Icon";
+import TransactionRow from "../components/TransactionRow";
 import { bucketsRepo, createTransactionConfirmed, profilesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, BucketKind, Profile, Transaction } from "../data/types";
 import {
@@ -46,6 +45,8 @@ import {
   observeSavingsGoal,
   planSavingsReaction,
 } from "../lib/buckySavingsEvents";
+import { onRecordsChanged } from "../lib/dataChange";
+import { profileIdFromHash } from "../lib/historyScope";
 import {
   buildTransactionCorrectionPatch,
   isCorrectableTransaction,
@@ -178,8 +179,8 @@ export default function PersonalPage() {
   const [categoryError, setCategoryError] = useState("");
   const [clearCategoryTarget, setClearCategoryTarget] = useState("");
 
-  // Personal history filter and section navigation.
-  const [historyFilter, setHistoryFilter] = useState<"all" | "income" | "expense" | "savings">("all");
+  // Personal history section navigation (all records are shown;
+  // there is intentionally no type filter on this history).
   const historyRef = useRef<HTMLElement | null>(null);
   const recordFormRef = useRef<HTMLFormElement | null>(null);
 
@@ -228,22 +229,13 @@ export default function PersonalPage() {
   const incomeExpenseCount = transactions.filter(
     (t) => t.type === "income" || t.type === "expense",
   ).length;
-  const filteredTransactions = transactions.filter((t) => {
-    if (historyFilter === "all") return true;
-    if (historyFilter === "savings") {
-      return t.type === "savings-deposit" || t.type === "savings-withdrawal";
-    }
-    return t.type === historyFilter;
-  });
-
   function scrollToElement(element: HTMLElement | null) {
     if (!element) return;
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     element.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
   }
 
-  function viewRecords(filter: typeof historyFilter) {
-    setHistoryFilter(filter);
+  function viewRecords() {
     requestAnimationFrame(() => scrollToElement(historyRef.current));
   }
 
@@ -294,9 +286,21 @@ export default function PersonalPage() {
   }
 
   useEffect(() => {
-    void load();
+    void load(profileIdFromHash(window.location.hash) ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Confirmed Bucky saves refresh the displayed profile's records in
+  // place, preserving the selected profile and history filter.
+  useEffect(() => {
+    if (!profileId) return;
+    return onRecordsChanged(() => {
+      void loadProfileData(profileId).catch(() => {
+        // Keep the last loaded records if a refresh fails.
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
 
   async function switchProfile(id: string) {
     if (id === profileId) return;
@@ -953,7 +957,7 @@ export default function PersonalPage() {
                     <button
                       className="btn ghost small"
                       type="button"
-                      onClick={() => viewRecords("all")}
+                      onClick={() => viewRecords()}
                     >
                       View records
                     </button>
@@ -1599,33 +1603,9 @@ export default function PersonalPage() {
                 <div className="panel-head">
                   <h2 id="personal-history-heading">Personal history</h2>
                   <span className="count-badge">
-                    {historyFilter === "all"
-                      ? `${transactions.length} ${transactions.length === 1 ? "record" : "records"}`
-                      : `${filteredTransactions.length} of ${transactions.length} records`}
+                    {`${transactions.length} ${transactions.length === 1 ? "record" : "records"}`}
                   </span>
                 </div>
-                {transactions.length > 0 && (
-                  <div className="type-toggle personal-history-filter" role="group" aria-label="Filter personal history">
-                    {(
-                      [
-                        { id: "all", label: "All" },
-                        { id: "income", label: "Income" },
-                        { id: "expense", label: "Expenses" },
-                        { id: "savings", label: "Savings movements" },
-                      ] as const
-                    ).map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        className={historyFilter === option.id ? "type-option on" : "type-option"}
-                        aria-pressed={historyFilter === option.id}
-                        onClick={() => setHistoryFilter(option.id)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 {transactions.length === 0 ? (
                   <div className="empty-state dash-empty">
                     <p>No personal records yet.</p>
@@ -1643,39 +1623,23 @@ export default function PersonalPage() {
                       </button>
                     </div>
                   </div>
-                ) : filteredTransactions.length === 0 ? (
-                  <div className="empty-state dash-empty">
-                    <p>No records match this filter.</p>
-                    <p className="muted">Try a different filter to see the rest of your history.</p>
-                  </div>
                 ) : (
                   <ul className="txn-list">
-                    {filteredTransactions.map((txn) => {
+                    {transactions.map((txn) => {
                       const editable = isCorrectableTransaction(txn);
-                      const display = transactionDisplay(txn.type);
                       const assigned = bucketSelectName(txn.bucketId);
                       return (
-                        <li key={txn.id} className="txn-row" data-kind={txn.type}>
-                          <span className="record-icon"><Icon name={display.icon} /></span>
-                          <div className="txn-main">
-                            <strong>{txn.description}</strong>
-                            <p className="muted bucket-meta">
-                              {formatDate(txn.date)} · <span className="txn-type" title={display.context}>{display.label}</span>
-                              {txn.category ? ` · ${txn.category}` : ""}
-                              {assigned ? ` · ${assigned}` : ""}
-                              {txn.origin === "scanner-confirmed"
-                                ? " · Scanned record"
-                                : !editable && txn.type !== "savings-deposit" && txn.type !== "savings-withdrawal"
-                                  ? ` · ${txn.origin}`
-                                  : ""}
-                            </p>
-                          </div>
-                          <div className="txn-value">
-                            <span className={`txn-amount ${display.amountClass}`} aria-label={`${display.context}: ${display.sign}${formatMoney(txn.amountMinor, txn.currency)}`}>
-                              {display.sign}{formatMoney(txn.amountMinor, txn.currency)}
-                            </span>
-                            <span className="txn-direction">{display.context}</span>
-                          </div>
+                        <TransactionRow
+                          key={txn.id}
+                          txn={txn}
+                          dateLabel={formatDate(txn.date)}
+                          amountLabel={formatMoney(txn.amountMinor, txn.currency)}
+                          meta={<>
+                            {txn.category && <span>{txn.category}</span>}
+                            {assigned && <span>{assigned}</span>}
+                            {txn.origin === "scanner-confirmed" && <span>Scanned record</span>}
+                          </>}
+                        >
                           {editable ? (
                             <div className="row-actions txn-actions">
                               <button className="btn ghost small" type="button" onClick={() => startEditTxn(txn)}>
@@ -1699,7 +1663,7 @@ export default function PersonalPage() {
                                 : "Managed elsewhere"}
                             </span>
                           )}
-                        </li>
+                        </TransactionRow>
                       );
                     })}
                   </ul>

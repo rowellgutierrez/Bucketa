@@ -1,5 +1,6 @@
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types.ts";
 import { bucketGoalProgress, expenseByCategory, monthlyIncomeExpense, summarizeTransactions } from "./finance.ts";
+import { compensationTypeOf, paymentEmployeeName, type CompensationType } from "./employees.ts";
 import { formatMoney } from "./currency.ts";
 
 function money(minor: number, currency: string): string {
@@ -42,7 +43,7 @@ export interface BuckyProposal {
 
 export interface BuckyInsight {
   id: string;
-  kind: "cash-flow" | "categories" | "month-change" | "duplicates" | "savings" | "inventory" | "pos" | "data-quality";
+  kind: "cash-flow" | "categories" | "month-change" | "duplicates" | "savings" | "inventory" | "pos" | "data-quality" | "salary";
   severity: BuckySeverity;
   title: string;
   detail: string;
@@ -63,6 +64,10 @@ export interface CurrencyIntelligence {
   topExpenseCategories: { category: string; totalMinor: number }[];
   currentMonthExpenseMinor: number;
   previousMonthExpenseMinor: number;
+  /** Expenses categorised as Salaries only. Bucky reports recorded salary
+   * payments; it does not run payroll. */
+  salaryExpenseMinor: number;
+  salaryPaymentCount: number;
   /** Signed percent change vs previous month, or null when not comparable. */
   monthExpenseChangePct: number | null;
 }
@@ -77,6 +82,10 @@ export interface BuckyAnalysis {
   proposals: BuckyProposal[];
   duplicateGroups: { description: string; date: string; amountMinor: number; currency: string; count: number }[];
   lowStock: { productId: string; name: string; stock: number }[];
+  /** Recorded salary/bonus/advance payments (expenses linked to an
+   * employee by relatedId or by the name in the payment description).
+   * Internal analysis data only — never sent to a model. */
+  compensationPayments: { employeeName: string; currency: string; amountMinor: number; date: string; type: CompensationType }[];
   limitations: string[];
   hasAnyData: boolean;
 }
@@ -102,6 +111,19 @@ export function analyzeBuckyFinances(input: {
   // Hard profile isolation: even if a caller passes mixed data, only this
   // profile's records are ever analysed.
   const transactions = input.transactions.filter((t) => t.profileId === profile.id);
+  const employees = (input.employees ?? []).filter((e) => e.profileId === profile.id);
+  const employeeById = new Map(employees.map((e) => [e.id, e]));
+  const compensationPayments = transactions
+    .filter((t) => compensationTypeOf(t) !== null)
+    .map((t) => ({
+      employeeName:
+        paymentEmployeeName(t.description) ??
+        (t.relatedId ? employeeById.get(t.relatedId)?.name ?? "Unnamed employee" : "Unnamed employee"),
+      currency: t.currency,
+      amountMinor: t.amountMinor,
+      date: t.date.slice(0, 10),
+      type: compensationTypeOf(t) ?? "salary",
+    }));
   const products = input.products.filter((p) => p.profileId === profile.id);
   const sales = input.sales.filter((s) => s.profileId === profile.id);
   const buckets = input.buckets.filter((b) => b.profileId === profile.id);
@@ -145,6 +167,9 @@ export function analyzeBuckyFinances(input: {
     const prevExp = prev?.expense ?? 0;
     const changePct = prevExp > 0 ? ((curExp - prevExp) / prevExp) * 100 : null;
     const currencySales = sales.filter((s) => s.currency === currency);
+    const salaryTxns = transactions.filter(
+      (t) => t.currency === currency && t.type === "expense" && (t.category ?? "").trim().toLowerCase() === "salaries",
+    );
     return {
       currency,
       incomeMinor: summary?.income ?? 0,
@@ -156,9 +181,17 @@ export function analyzeBuckyFinances(input: {
       topExpenseCategories: expenseByCategory(transactions, currency).slice(0, 3).map((c) => ({ category: c.category, totalMinor: c.total })),
       currentMonthExpenseMinor: curExp,
       previousMonthExpenseMinor: prevExp,
+      salaryExpenseMinor: salaryTxns.reduce((sum, t) => sum + t.amountMinor, 0),
+      salaryPaymentCount: salaryTxns.length,
       monthExpenseChangePct: changePct,
     };
   });
+
+  if (currencies.some((c) => c.salaryPaymentCount > 0)) {
+    limitations.push(
+      "Salary figures come only from saved expenses categorised as Salaries. Bucky records and reports salary payments; it does not run payroll, compute deductions, or create payslips.",
+    );
+  }
 
   for (const c of currencies) {
     if (c.transactionCount > 0) {
@@ -226,6 +259,38 @@ export function analyzeBuckyFinances(input: {
         }),
       });
     }
+    if (c.salaryPaymentCount > 0) {
+      // Per-person totals come from the recorded descriptions Bucky and
+      // the manual/scanner flows write ("Salary payment — <name>").
+      const byPerson = new Map<string, number>();
+      for (const t of transactions) {
+        if (t.currency !== c.currency || t.type !== "expense" || (t.category ?? "").trim().toLowerCase() !== "salaries") continue;
+        const name = paymentEmployeeName(t.description);
+        if (name) byPerson.set(name, (byPerson.get(name) ?? 0) + t.amountMinor);
+      }
+      insights.push({
+        id: `salary-${c.currency}`,
+        kind: "salary",
+        severity: "info",
+        title: `${c.currency} salary payments recorded as expenses`,
+        detail: "Totals from saved expenses categorised as Salaries. This is recorded salary spending, not a payroll calculation.",
+        currency: c.currency,
+        evidence: [
+          { label: "Salary payments", value: String(c.salaryPaymentCount) },
+          { label: "Total salary expenses", value: money(c.salaryExpenseMinor, c.currency) },
+          ...[...byPerson.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 4)
+            .map(([name, total]) => ({ label: name, value: money(total, c.currency) })),
+        ],
+        proposalId: addProposal({
+          id: `review-salaries-${c.currency}`,
+          title: `Review ${c.currency} salary expenses`,
+          rationale: "Open the records to inspect each recorded salary payment.",
+          action: { type: "navigate", route: profile.kind === "business" ? "/transactions" : "/personal", label: "Review salaries" },
+        }),
+      });
+    }
     if (c.posSaleCount > 0) {
       insights.push({
         id: `pos-${c.currency}`,
@@ -283,12 +348,19 @@ export function analyzeBuckyFinances(input: {
       id: `savings-${bucket.id}`,
       kind: "savings",
       severity: progress.percent >= 100 ? "positive" : "info",
-      title: `${bucket.name}: ${progress.percent.toFixed(0)}% of goal`,
-      detail: progress.percent >= 100 ? "Goal reached based on records assigned to this bucket." : "Progress from records assigned to this bucket, in its own currency only.",
+      title: `${bucket.name}: ${progress.actualPercent.toFixed(0)}% of goal`,
+      detail: progress.overTargetMinor > 0
+        ? `Goal exceeded based on records assigned to this bucket — ${money(progress.overTargetMinor, bucket.currency)} above the target.`
+        : progress.percent >= 100
+          ? "Goal reached based on records assigned to this bucket."
+          : "Progress from records assigned to this bucket, in its own currency only.",
       currency: bucket.currency,
       evidence: [
         { label: "Saved", value: money(progress.savedMinor, bucket.currency) },
         { label: "Goal", value: money(bucket.targetMinor ?? 0, bucket.currency) },
+        ...(progress.overTargetMinor > 0
+          ? [{ label: "Above target", value: money(progress.overTargetMinor, bucket.currency) }]
+          : []),
       ],
       proposalId: null,
     });
@@ -345,6 +417,7 @@ export function analyzeBuckyFinances(input: {
     proposals,
     duplicateGroups,
     lowStock,
+    compensationPayments,
     limitations,
     hasAnyData: transactions.length > 0 || sales.length > 0 || products.length > 0,
   };
@@ -377,6 +450,90 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     if (!i) return { answer: "No active products are at 3 or fewer units, based on current recorded stock.", facts: [], proposalIds: [], insufficientData: false };
     return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: i.proposalId ? [i.proposalId] : [], insufficientData: false };
   }
+  if (
+    /salary|salaries|wage|payroll|bonus|advance/.test(q)
+    || /\b(employee|employees)\b/.test(q)
+    || (/\b(pay|paid|paying)\b/.test(q)
+      && analysis.compensationPayments.some((p) => q.includes(p.employeeName.toLowerCase())))
+  ) {
+    const payments = analysis.compensationPayments;
+    if (payments.length === 0) return insufficient("No salary, bonus, or advance payments are recorded for this profile yet, so I can't report them.");
+    const moneyOf = (amount: number, currency: string) => money(amount, currency);
+    const totalsBy = (list: typeof payments) => {
+      const byCurrency = new Map<string, number>();
+      for (const p of list) byCurrency.set(p.currency, (byCurrency.get(p.currency) ?? 0) + p.amountMinor);
+      return [...byCurrency.entries()].map(([currency, total]) => ({ label: currency, value: moneyOf(total, currency) }));
+    };
+    // One named person: "How much did I pay Roger (this month)?"
+    const names = [...new Set(payments.map((p) => p.employeeName))];
+    const namedPerson = names.find((n) => q.includes(n.toLowerCase()));
+    if (namedPerson) {
+      const mine = payments.filter((p) => p.employeeName === namedPerson);
+      const thisMonth = /this month/.test(q);
+      const scoped = thisMonth
+        ? mine.filter((p) => p.date.slice(0, 7) === analysis.generatedAt.slice(0, 7))
+        : mine;
+      if (scoped.length === 0) {
+        return insufficient(`No recorded payments to ${namedPerson} this month.`);
+      }
+      return {
+        answer: `You paid ${namedPerson} ${totalsBy(scoped).map((f) => f.value).join(" and ")} across ${scoped.length} recorded payment${scoped.length === 1 ? "" : "s"}${thisMonth ? " this month" : ""}. These are recorded salary/bonus/advance expenses, not a payroll calculation.`,
+        facts: totalsBy(scoped),
+        proposalIds: [],
+        insufficientData: false,
+      };
+    }
+    // One named month: "Show my salary expenses for November."
+    const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    const monthIndex = monthNames.findIndex((m) => q.includes(m));
+    if (monthIndex >= 0) {
+      const yearMatch = /\b(20\d{2})\b/.exec(q);
+      const salaryOnly = payments.filter(
+        (p) => p.type === "salary"
+          && Number(p.date.slice(5, 7)) === monthIndex + 1
+          && (!yearMatch || p.date.startsWith(yearMatch[1])),
+      );
+      if (salaryOnly.length === 0) {
+        return insufficient(`No salary expenses are recorded for ${monthNames[monthIndex][0].toUpperCase()}${monthNames[monthIndex].slice(1)}${yearMatch ? ` ${yearMatch[1]}` : ""} yet.`);
+      }
+      const latest = [...salaryOnly].sort((a, b) => b.date.localeCompare(a.date))[0];
+      return {
+        answer: `Recorded salary expenses for ${latest.date.slice(0, 7)} total ${totalsBy(salaryOnly).map((f) => f.value).join(" and ")} across ${salaryOnly.length} payment${salaryOnly.length === 1 ? "" : "s"}. Bonuses and advances are not included in this salary-only total.`,
+        facts: totalsBy(salaryOnly),
+        proposalIds: [],
+        insufficientData: false,
+      };
+    }
+    // Highest recorded payments.
+    if (/highest|most|top/.test(q)) {
+      const byPerson = new Map<string, { currency: string; total: number; count: number }>();
+      for (const p of payments) {
+        const key = `${p.employeeName}|${p.currency}`;
+        const entry = byPerson.get(key) ?? { currency: p.currency, total: 0, count: 0 };
+        entry.total += p.amountMinor;
+        entry.count += 1;
+        byPerson.set(key, entry);
+      }
+      const ranked = [...byPerson.entries()]
+        .map(([key, v]) => ({ name: key.split("|")[0], ...v }))
+        .sort((a, b) => b.total - a.total);
+      const top = ranked[0];
+      return {
+        answer: `${top.name} received the highest recorded payments: ${moneyOf(top.total, top.currency)} across ${top.count} payment${top.count === 1 ? "" : "s"}.`,
+        facts: ranked.slice(0, 4).map((r) => ({ label: r.name, value: moneyOf(r.total, r.currency) })),
+        proposalIds: [],
+        insufficientData: false,
+      };
+    }
+    const salaryInsights = analysis.insights.filter((i) => i.kind === "salary");
+    if (salaryInsights.length === 0) return insufficient("No expenses categorised as Salaries are recorded for this profile yet, so I can't report salary payments.");
+    return {
+      answer: salaryInsights.map((i) => `${i.title}. ${i.detail}`).join(" "),
+      facts: salaryInsights.flatMap((i) => i.evidence),
+      proposalIds: salaryInsights.map((i) => i.proposalId).filter((x): x is string => Boolean(x)),
+      insufficientData: false,
+    };
+  }
   if (/expense|spending|cost|increase|why/.test(q)) {
     const i = pick("month-change") ?? pick("categories") ?? analysis.insights.find((x) => x.kind === "cash-flow");
     if (!i) return insufficient("There isn't enough dated expense history to explain spending changes yet.");
@@ -391,9 +548,24 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: i.proposalId ? [i.proposalId] : [], insufficientData: false };
   }
   if (/saving|goal|bucket/.test(q)) {
-    const i = pick("savings");
-    if (!i) return insufficient("No bucket with a savings goal has progress to report for this profile yet.");
-    return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: [], insufficientData: false };
+    const savingsInsights = analysis.insights.filter((i) => i.kind === "savings");
+    if (savingsInsights.length === 0) return insufficient("No bucket with a savings goal has progress to report for this profile yet.");
+    // Named-goal questions ("How is my iPhone goal doing?") resolve to that
+    // goal; insight titles start with the bucket name.
+    const named = savingsInsights.find((i) =>
+      q.includes(i.title.split(":")[0].trim().toLowerCase()),
+    );
+    if (named) return { answer: `${named.title}. ${named.detail}`, facts: named.evidence, proposalIds: [], insufficientData: false };
+    if (savingsInsights.length === 1) {
+      const i = savingsInsights[0];
+      return { answer: `${i.title}. ${i.detail}`, facts: i.evidence, proposalIds: [], insufficientData: false };
+    }
+    return {
+      answer: `You have ${savingsInsights.length} savings goals: ${savingsInsights.map((i) => i.title).join("; ")}. Ask about one by name for its details.`,
+      facts: savingsInsights.flatMap((i) => i.evidence),
+      proposalIds: [],
+      insufficientData: false,
+    };
   }
   if (/cash|summary|how|overview|doing/.test(q)) {
     const cash = analysis.insights.filter((i) => i.kind === "cash-flow");

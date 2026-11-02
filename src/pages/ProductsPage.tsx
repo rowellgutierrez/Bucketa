@@ -15,6 +15,7 @@ import {
   minorUnitsToAmountInput,
   parseAmountToMinorUnits,
 } from "../lib/currency";
+import { onRecordsChanged } from "../lib/dataChange";
 
 type Status = "loading" | "ready" | "error";
 
@@ -116,6 +117,20 @@ export default function ProductsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A product created elsewhere (e.g. confirmed through Bucky) notifies
+  // here: silently re-read the selected business's products so the new
+  // item appears without a reload, preserving page state.
+  useEffect(() => {
+    if (!profileId) return;
+    return onRecordsChanged(() => {
+      void loadProducts(profileId).catch(() => {
+        // Keep showing the last loaded products if a refresh fails; the
+        // created product itself is already committed.
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
 
   async function switchBusiness(id: string) {
     if (id === profileId) return;

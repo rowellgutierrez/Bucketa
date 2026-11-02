@@ -1,9 +1,12 @@
 import Icon from "../components/ui/Icon";
+import ScannerCamera from "../components/ScannerCamera";
 import PageHeader from "../components/ui/PageHeader";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import { bucketsRepo, profilesRepo, saveScannerTransactions } from "../data/db";
+import { notifyRecordsChanged } from "../lib/dataChange";
 import type { Bucket, Profile } from "../data/types";
 import { formatMoney } from "../lib/currency";
+import { personalHrefForProfile, transactionsHrefForProfile } from "../lib/historyScope";
 import {
   fetchScannerHealth,
   isLiveScannerAvailable,
@@ -413,7 +416,20 @@ function ScannerDateEditor({
   );
 }
 
-export default function ScannerPage() {
+interface ScannerPageProps {
+  /**
+   * Embedded hosts (the floating Bucky dialog) render the exact same
+   * scanner workflow without the standalone page header. Every gate,
+   * safeguard, and the single save path stay identical either way.
+   */
+  embedded?: boolean;
+  /** Mirrors the unsaved-review state so hosts can veto closing. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** Called when a saved-records link is followed from embedded mode. */
+  onExit?: () => void;
+}
+
+export default function ScannerPage({ embedded = false, onDirtyChange, onExit }: ScannerPageProps = {}) {
   const [healthStatus, setHealthStatus] = useState<HealthStatus>("checking");
   const [health, setHealth] = useState<ScannerHealth | null>(null);
   const [healthError, setHealthError] = useState("");
@@ -432,6 +448,9 @@ export default function ScannerPage() {
   const [fileName, setFileName] = useState("");
   const [imageError, setImageError] = useState("");
   const [preparing, setPreparing] = useState(false);
+  // In-app camera (Phase B4): mounted only after an explicit Take photo
+  // tap; unmounting stops every media track.
+  const [cameraOpen, setCameraOpen] = useState(false);
 
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState("");
@@ -501,6 +520,12 @@ export default function ScannerPage() {
   const pendingRemovalDraft = pendingRemovalId
     ? drafts.find((draft) => draft.transactionId === pendingRemovalId) ?? null
     : null;
+
+  // Embedded hosts mirror the unsaved-review state so they can veto
+  // closing (Escape, backdrop, close, back) before a review is discarded.
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedDrafts);
+  }, [hasUnsavedDrafts, onDirtyChange]);
 
   // Persist only the scanner date-format preference (no financial data).
   useEffect(() => {
@@ -669,6 +694,33 @@ export default function ScannerPage() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    requestDraftChange({ kind: "image", file });
+  }
+
+  /**
+   * Take photo: prefer the real in-app camera (live preview, explicit
+   * capture). Browsers without getUserMedia — including insecure
+   * contexts — fall back to the capture file input, which mobile
+   * browsers may route to the OS camera. Upload image stays a separate,
+   * always-available file picker either way.
+   */
+  function openCamera() {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function" &&
+      window.isSecureContext
+    ) {
+      setImageError("");
+      setCameraOpen(true);
+      return;
+    }
+    cameraInputRef.current?.click();
+  }
+
+  /** A confirmed camera photo joins the same validated pipeline as an upload. */
+  function onCameraPhoto(file: File) {
+    setCameraOpen(false);
     requestDraftChange({ kind: "image", file });
   }
 
@@ -848,14 +900,15 @@ export default function ScannerPage() {
       setResult(nextResult);
       const nextDrafts = buildScannerDrafts(nextResult, requestRecordType, nextBatchId);
       setDrafts(nextDrafts);
-      // Entries needing attention start expanded. Valid entries start
-      // expanded on wide screens and collapsed on narrow ones, where a
-      // fully expanded review becomes excessively long.
-      const wideScreen = window.innerWidth > 900;
+      // Entries start as compact rows on every screen size. Only entries
+      // that need explicit confirmation start expanded; validation errors
+      // expand their entry when a save is attempted, and the reviewer can
+      // expand any row to edit. Collapsing never unmounts inputs, so
+      // edited values and partially entered dates are preserved.
       setExpandedIds(
         new Set(
           nextDrafts
-            .filter((draft) => wideScreen || requiresExplicitConfirmation(draft))
+            .filter((draft) => requiresExplicitConfirmation(draft))
             .map((draft) => draft.transactionId),
         ),
       );
@@ -912,8 +965,9 @@ export default function ScannerPage() {
     (draft) => (draftErrors.get(draft.transactionId) ?? []).length > 0,
   );
 
-  // After a failed save attempt, move focus to the error summary so
-  // keyboard and screen-reader users land on the list of problems.
+  // Fallback only: after a failed save attempt, focus the error summary
+  // when no actionable invalid field could be focused (the first invalid
+  // field itself is focused preferentially in requestSaveConfirmation).
   useEffect(() => {
     if (!focusErrorSummaryRef.current) return;
     if (!saveAttempted || invalidDraftCount === 0) return;
@@ -1155,13 +1209,29 @@ export default function ScannerPage() {
       return;
     }
     if (invalidDraftCount > 0) {
-      focusErrorSummaryRef.current = true;
       // Automatically expand every affected entry so its errors and
       // mandatory confirmations are visible and actionable.
       expandEntries(invalidDrafts.map((draft) => draft.transactionId));
       setSaveError(
         `Fix ${invalidDraftCount} ${invalidDraftCount === 1 ? "entry" : "entries"} or remove them before saving.`,
       );
+      // Land keyboard focus on the first actionable invalid field of the
+      // first invalid entry (the error summary stays available above the
+      // save button, and its "Go to entry" buttons still work). Only if
+      // that entry has no focusable field error do we fall back to
+      // focusing the error summary.
+      const firstInvalid = invalidDrafts[0];
+      const firstFieldErrors = firstInvalid
+        ? draftFieldErrors.get(firstInvalid.transactionId) ?? {}
+        : {};
+      const hasActionableField = Object.values(firstFieldErrors).some(
+        (messages) => (messages ?? []).length > 0,
+      );
+      if (firstInvalid && hasActionableField) {
+        focusFirstInvalidField(firstInvalid);
+      } else {
+        focusErrorSummaryRef.current = true;
+      }
       return;
     }
     if (!grandTotalAcknowledged) {
@@ -1202,6 +1272,9 @@ export default function ScannerPage() {
         transactions,
       });
       setSaveOutcome(outcome);
+      // A confirmed save (or a confirmed already-saved batch) refreshes
+      // any mounted record views silently, embedded hosts included.
+      notifyRecordsChanged({ kind: "scanner-saved" });
       setConfirmingSave(false);
     } catch (error) {
       setConfirmingSave(false);
@@ -1222,14 +1295,16 @@ export default function ScannerPage() {
       (liveAvailable && liveTestToken.trim().length > 0));
 
   return (
-    <section className="page scanner-page">
-      <PageHeader
-        className="workspace-page-header"
-        eyebrow="BUSINESS TOOLS"
-        title="Bucky Record Scanner"
-        description="Upload a record, review every entry, then confirm what gets saved."
-        actions={<span className="currency-badge">{extractionMode === "live" && liveAvailable ? "Live Meta · test" : "Mock · sample records"}</span>}
-      />
+    <section className={embedded ? "page scanner-page scanner-embedded" : "page scanner-page"}>
+      {!embedded && (
+        <PageHeader
+          className="workspace-page-header"
+          eyebrow="BUSINESS TOOLS"
+          title="Bucky Record Scanner"
+          description="Upload a record, review every entry, then confirm what gets saved."
+          actions={<span className="currency-badge">{extractionMode === "live" && liveAvailable ? "Live Meta · test" : "Mock · sample records"}</span>}
+        />
+      )}
 
       <section className="card scanner-status" aria-labelledby="scanner-status-heading">
         <h2 id="scanner-status-heading" className="inline-form-title">{healthStatus === "offline" ? "Scanner unavailable" : "Scanner connection"}</h2>
@@ -1351,7 +1426,7 @@ export default function ScannerPage() {
                     />
                     <span>
                       <strong>Mock scan (default)</strong>
-                      <small>Uses fictional sample records; no image is sent to Meta AI.</small>
+                      <small>Uses fictional sample records; no image is sent for AI scanning.</small>
                     </span>
                   </label>
                   <label className="scanner-mode-option">
@@ -1367,7 +1442,7 @@ export default function ScannerPage() {
                       <strong>Live AI test (local development only)</strong>
                       <small>
                         {liveAvailable
-                          ? "Sends the selected image through the local backend to Meta AI after confirmation."
+                          ? "Sends the selected image through the local backend for AI scanning after confirmation."
                           : "Unavailable unless the local backend reports gated live mode and its quota is verified."}
                       </small>
                     </span>
@@ -1420,7 +1495,7 @@ export default function ScannerPage() {
               onChange={(event) => void onImageSelected(event)}
             />
             <div className="row-actions">
-              <button className="btn" type="button" disabled={extracting || preparing} onClick={() => cameraInputRef.current?.click()}>
+              <button className="btn" type="button" disabled={extracting || preparing || cameraOpen} onClick={openCamera}>
                 Take photo
               </button>
               <button className="btn ghost" type="button" disabled={extracting || preparing} onClick={() => fileInputRef.current?.click()}>
@@ -1432,6 +1507,9 @@ export default function ScannerPage() {
                 </button>
               )}
             </div>
+            {cameraOpen && (
+              <ScannerCamera onUsePhoto={onCameraPhoto} onClose={() => setCameraOpen(false)} />
+            )}
             <p className="field-hint">
               JPEG, PNG, WebP, or GIF, up to 5 MB. Larger photos are resized
               on this device before upload; the server checks the image again.
@@ -1508,7 +1586,7 @@ export default function ScannerPage() {
                 }
               }}
             >
-              <h3 id="scanner-live-confirm-heading">Send this image to Meta AI?</h3>
+              <h3 id="scanner-live-confirm-heading">Send this image for AI scanning?</h3>
               <p id="scanner-live-confirm-detail">
                 Send <strong>{fileName || "the selected image"}</strong> for{" "}
                 <strong>{activeProfile?.name}</strong> as {recordType} in {expectedCurrency},
@@ -1521,7 +1599,7 @@ export default function ScannerPage() {
               </p>
               <div className="row-actions">
                 <button className="btn" type="button" disabled={extracting} onClick={() => void startExtraction("live")}>
-                  Send once to Meta AI
+                  Send once for AI scanning
                 </button>
                 <button
                   className="btn ghost"
@@ -1541,7 +1619,7 @@ export default function ScannerPage() {
       {extracting && (
         <div className="card" role="status">
           {extractionMode === "live"
-            ? "Sending the image to Meta AI…"
+            ? "Sending the image for AI scanning…"
             : "Reading the record in mock mode…"}
         </div>
       )}
@@ -2015,10 +2093,10 @@ export default function ScannerPage() {
                       : `${drafts.length} scanner ${drafts.length === 1 ? "entry" : "entries"} saved.`}
                   </p>
                   <div className="row-actions">
-                    <a className="btn" href={activeProfile?.kind === "business" ? "#/transactions" : "#/personal"}>
+                    <a className="btn" href={activeProfile ? (activeProfile.kind === "business" ? transactionsHrefForProfile(activeProfile.id) : personalHrefForProfile(activeProfile.id)) : "#/transactions"} onClick={embedded ? () => onExit?.() : undefined}>
                       View saved records
                     </a>
-                    <a className="btn ghost" href="#/dashboard">Open Home</a>
+                    <a className="btn ghost" href="#/dashboard" onClick={embedded ? () => onExit?.() : undefined}>Open Home</a>
                     <button className="btn ghost" type="button" onClick={clearImage}>Scan another record</button>
                   </div>
                 </div>

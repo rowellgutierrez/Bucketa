@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { getConfig, getLiveTestToken, getModelApiKey, loadRootEnv } from "./config.mjs";
 import { errors, PublicError } from "./errors.mjs";
 import { assertLiveAllowed, createLiveLimiter } from "./liveGate.mjs";
-import { buildMetaAdviceRequest, buildMetaRequest, META_MODEL_ID, sendMetaAdvice, sendToMeta } from "./metaClient.mjs";
+import { buildMetaAdviceRequest, buildMetaInterpretRequest, buildMetaRequest, META_MODEL_ID, sendMetaAdvice, sendMetaInterpret, sendToMeta } from "./metaClient.mjs";
 import { MetaDiagnosticError, metaDiagnosticLogLine, safeMetaDiagnostic } from "./metaDiagnostics.mjs";
 import {
   BUCKY_ADVICE_MAX_BODY_BYTES,
@@ -12,6 +12,11 @@ import {
   validateAdviceRequest,
   validateModelAdvice,
 } from "./buckyAdvice.mjs";
+import {
+  BUCKY_INTERPRET_MAX_BODY_BYTES,
+  validateInterpretRequest,
+  validateModelInterpretation,
+} from "./buckyInterpret.mjs";
 import { extractWithMock } from "./mockExtractor.mjs";
 import { isValidCurrencyCode } from "./money.mjs";
 import { validateExtraction } from "./validateExtraction.mjs";
@@ -203,6 +208,76 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
   }
 }
 
+/**
+ * POST /api/bucky/interpret — Phase D model-assisted interpretation.
+ * The browser's deterministic interpreter is the default and the fallback.
+ * Fallback mode never calls the model: it answers { source:
+ * "deterministic", proposal: null } and the client uses its local parser.
+ * Live mode requires the same triple gate and single-attempt session
+ * limiter as the scanner and advisor, and returns only a strictly
+ * validated structured proposal. The browser cross-checks that proposal
+ * against the user's own words and real records before showing the usual
+ * preview; nothing here writes data, and any live failure degrades to
+ * "no proposal" with a safe diagnostic — never to a trusted guess.
+ */
+async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }) {
+  if (!req.headers["content-type"]?.includes("application/json")) {
+    throw errors.invalidRequest();
+  }
+  const bodyBuffer = await readBody(req, BUCKY_INTERPRET_MAX_BODY_BYTES);
+  let payload;
+  try {
+    payload = JSON.parse(bodyBuffer.toString("utf8"));
+  } catch {
+    throw errors.invalidRequest();
+  }
+  const validated = validateInterpretRequest(payload);
+
+  if (validated.mode !== "live") {
+    sendJson(res, 200, { source: "deterministic", model: null, proposal: null });
+    return;
+  }
+
+  // Live path: identical gates and limiter as /api/bucky/advise. Gate
+  // failures are errors (never a silent downgrade of a live request).
+  assertLiveAllowed({
+    liveMetaEnabled: config.liveMetaEnabled,
+    modelApiKey: getModelApiKey(),
+    liveTestToken: getLiveTestToken(),
+    requestToken: req.headers["x-bucketa-live-test"],
+  });
+  liveLimiter.consume();
+  try {
+    const request = buildMetaInterpretRequest({
+      text: validated.text,
+      context: validated.context,
+      apiKey: getModelApiKey(),
+    });
+    const raw = await sendMetaInterpret(request, fetchImpl);
+    const proposal = validateModelInterpretation(raw, validated.context);
+    sendJson(res, 200, {
+      source: proposal.kind === "none" ? "deterministic" : "meta-live",
+      model: proposal.kind === "none" ? null : META_MODEL_ID,
+      proposal: proposal.kind === "none" ? null : proposal,
+    });
+  } catch (err) {
+    // Upstream or validation failure: no proposal. The deterministic
+    // interpreter remains in charge; nothing partial is trusted.
+    const diagnostic = safeMetaDiagnostic(err);
+    console.log(metaDiagnosticLogLine("bucky-interpret/live", diagnostic));
+    sendJson(res, 200, {
+      source: "deterministic",
+      model: null,
+      proposal: null,
+      diagnostic: {
+        category: diagnostic.category,
+        upstreamStatus: diagnostic.upstreamStatus,
+        subReason: diagnostic.subReason ?? null,
+      },
+    });
+  }
+}
+
 export function createAppServer(config = getConfig(), deps = {}) {
   const liveLimiter = deps.liveLimiter ?? createLiveLimiter();
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -236,6 +311,11 @@ export function createAppServer(config = getConfig(), deps = {}) {
       }
       if (req.method === "POST" && url.pathname === "/api/bucky/advise") {
         await handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl });
+        status = 200;
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/bucky/interpret") {
+        await handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl });
         status = 200;
         return;
       }
