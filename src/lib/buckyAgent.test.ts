@@ -131,6 +131,11 @@ test("salary expenses are totalled per person and never called payroll", () => {
   const php = a.currencies.find((c) => c.currency === "PHP")!;
   assert.equal(php.salaryExpenseMinor, 250000);
   assert.equal(php.salaryPaymentCount, 3);
+  // The model summary copies insight kinds verbatim; a salary-bearing
+  // profile therefore sends "salary", which the server validator must
+  // accept (regression: it once rejected every live request for such
+  // profiles as invalid_request before the live gate ever ran).
+  assert.ok(buildBuckyModelSummary(a).insightKinds.includes("salary"));
   const ans = answerBuckyQuestion("How much salary did I pay?", a);
   assert.match(ans.answer, /salary payments recorded as expenses/i);
   assert.ok(ans.facts.some((f) => f.label === "Roger"));
@@ -409,6 +414,29 @@ test("analysis never mutates inputs and proposals only navigate or open the scan
   }
 });
 
+test("model summary carries bounded per-goal context for the selected profile only", () => {
+  const a = analyze({
+    transactions: [
+      txn({ type: "savings-deposit", bucketId: "b1", amountMinor: 25000, description: "Secret deposit note" }),
+      txn({ type: "savings-deposit", bucketId: "b2", amountMinor: 99000, profileId: "p1" }),
+    ],
+    buckets: [
+      bucket({ id: "b1", name: "iPhone", targetMinor: 100000 }),
+      bucket({ id: "b2", name: "Other Profile Goal", profileId: "other", targetMinor: 100000 }),
+      bucket({ id: "b3", name: "USD Trip", currency: "USD", targetMinor: 50000 }),
+    ],
+  });
+  const summary = buildBuckyModelSummary(a);
+  // Selected profile's savings goals only, each in its own currency, with
+  // target/saved/remaining computed — and no raw record text.
+  assert.deepEqual(summary.savingsGoals, [
+    { name: "iPhone", currency: "PHP", targetMinor: 100000, savedMinor: 25000, remainingMinor: 75000 },
+    { name: "USD Trip", currency: "USD", targetMinor: 50000, savedMinor: 0, remainingMinor: 50000 },
+  ]);
+  assert.ok(!JSON.stringify(summary).includes("Other Profile Goal"));
+  assert.ok(!JSON.stringify(summary).includes("Secret deposit note"));
+});
+
 test("model summary contains aggregated totals only, never raw record descriptions", () => {
   const a = analyze({
     transactions: [
@@ -419,6 +447,24 @@ test("model summary contains aggregated totals only, never raw record descriptio
   assert.equal(summary.currencies[0].incomeMinor, 100000);
   assert.ok(!JSON.stringify(summary).includes("Secret salary description"));
   assert.equal(summary.duplicateGroupCount, 0);
+});
+
+test("summary and analysis questions are answered by Q&A with grounded facts", () => {
+  const a = analyze({
+    transactions: [
+      txn({ type: "income", amountMinor: 100000, description: "Salary" }),
+      txn({ type: "expense", amountMinor: 40000, description: "Groceries" }),
+    ],
+  });
+  for (const q of [
+    "Summarize my recorded income, expenses, and net cash flow in PHP",
+    "Analyze my current PHP financial summary",
+  ]) {
+    const answer = answerBuckyQuestion(q, a);
+    assert.equal(answer.insufficientData, false, q);
+    assert.ok(answer.facts.length > 0, q);
+    assert.ok(answer.facts.some((f) => f.value.includes("1,000.00") || f.value.includes("1000.00")), q);
+  }
 });
 
  test('English and Filipino totals use only the active profile and retain separate currencies', () => {
@@ -438,7 +484,7 @@ test("model summary contains aggregated totals only, never raw record descriptio
  });
  test('Unsupported dates, profitability, unknown goals, and product ranking do not invent figures',()=>{
   const a=analyze({transactions:[txn()],buckets:[bucket()],sales:[sale()]});
-  for(const q of ['Magkano ang benta ko ngayong buwan?','What are my expenses today?','What are my expenses in May?','What are my expenses for the last 30 days?','What is my net income?','Which products sold best?','How much tax do I owe?','How is my Nonexistent savings goal doing?']) {
+  for(const q of ['Magkano ang benta ko ngayong buwan?','What are my expenses today?','What are my expenses in May?','What are my expenses for the last 30 days?','What is my net income?','How much tax do I owe?','How is my Nonexistent savings goal doing?']) {
    const answer=answerBuckyQuestion(q,a);assert.equal(answer.insufficientData,true,q);assert.deepEqual(answer.facts,[],q);
   }
  });
@@ -447,6 +493,21 @@ test("model summary contains aggregated totals only, never raw record descriptio
   assert.deepEqual(answerBuckyQuestion('Magkano ang ipon ko?',a).facts,answerBuckyQuestion('How are my savings?',a).facts);
   assert.deepEqual(answerBuckyQuestion('Ano ang mababang imbentaryo?',a).facts,answerBuckyQuestion('What is low stock?',a).facts);
  });
+
+test("best-selling products and earned-today come from completed sales and dated records", () => {
+  const a = analyze({
+    profile: profile({ kind: "business", name: "Sari Store" }),
+    transactions: [txn({ type: "income", amountMinor: 70000, date: "2026-10-15", description: "Counter sales" })],
+    sales: [sale({ profileId: "p1", createdAt: "2026-10-15T09:00:00.000Z" })],
+  });
+  const best = answerBuckyQuestion("Show my best-selling products.", a);
+  assert.equal(best.insufficientData, false);
+  assert.ok(best.facts.some((f) => f.label === "Item"));
+  const today = answerBuckyQuestion("How much did we earn today?", a);
+  assert.equal(today.insufficientData, false);
+  assert.ok(today.facts.some((f) => f.label.includes("POS revenue")));
+  assert.equal(answerBuckyQuestion("Hello, how are you?", a).insufficientData, false);
+});
 
  test('Highest-paid questions never compare unlike currencies',()=>{
   const a=analyze({profile:profile({kind:'business'}),transactions:[txn({category:'Salaries',description:'Salary payment — Roger',amountMinor:100000}),txn({category:'Salaries',description:'Salary payment — Maria',amountMinor:10000,currency:'USD'})]});

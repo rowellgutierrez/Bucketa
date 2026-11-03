@@ -1,5 +1,7 @@
 import {recordBuckyEvent} from "../lib/buckyPresentation";
 import PageHeader from "../components/ui/PageHeader";
+import Icon from "../components/ui/Icon";
+import HistoryControls,{HistoryMore,useHistoryView} from "../components/HistoryControls";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import TransactionRow from "../components/TransactionRow";
 import { bucketsRepo, createTransactionConfirmed, profilesRepo, transactionsRepo } from "../data/db";
@@ -102,6 +104,9 @@ export default function PersonalPage() {
   const [profileName, setProfileName] = useState("");
   const [profileCurrency, setProfileCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [profileFormError, setProfileFormError] = useState("");
+  const [showRenameForm, setShowRenameForm] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [renameError, setRenameError] = useState("");
 
   // Record form.
   const [showRecordForm, setShowRecordForm] = useState(false);
@@ -119,6 +124,8 @@ export default function PersonalPage() {
 
   // Savings / budget bucket form.
   const [showBucketForm, setShowBucketForm] = useState(false);
+  // Savings & budgets list: first three by default (existing order kept).
+  const [showAllBuckets, setShowAllBuckets] = useState(false);
   const [editingBucketId, setEditingBucketId] = useState("");
   const [bucketName, setBucketName] = useState("");
   const [bucketKind, setBucketKind] = useState<BucketKind>("savings");
@@ -217,6 +224,7 @@ export default function PersonalPage() {
     editingTxn !== null && isScannerConfirmedTransaction(editingTxn);
   const movementBucket = buckets.find((b) => b.id === movementBucketId);
   const summaries = useMemo(() => summarizeTransactions(transactions), [transactions]);
+  const personalHistory=useHistoryView(transactions,profileId);
   const categories = useMemo(() => {
     const map = new Map<string, number>();
     for (const txn of transactions) {
@@ -306,6 +314,7 @@ export default function PersonalPage() {
   async function switchProfile(id: string) {
     if (id === profileId) return;
     setProfileId(id);
+    setShowAllBuckets(false);
     setNotice("");
     setPageError("");
     setShowRecordForm(false);
@@ -355,6 +364,22 @@ export default function PersonalPage() {
     } catch (error) {
       setProfileFormError(errorMessage(error));
     }
+  }
+
+  async function onRenameProfile(event: FormEvent) {
+    event.preventDefault();
+    if (!activeProfile) return;
+    const trimmed = renameName.trim();
+    if (!trimmed) { setRenameError("The profile name cannot be empty."); return; }
+    if (profiles.some((p) => p.id !== activeProfile.id && p.name.trim().toLowerCase() === trimmed.toLowerCase())) { setRenameError(`Another personal profile is already named “${trimmed}”. Choose a different name.`); return; }
+    if (trimmed === activeProfile.name) { setShowRenameForm(false); setRenameError(""); setNotice("That is already this profile's name — nothing changed."); return; }
+    try {
+      // Rename only: stable ID, currency, records, goals and history are untouched.
+      await profilesRepo.update(activeProfile.id, { name: trimmed });
+      setProfiles((prev) => prev.map((p) => (p.id === activeProfile.id ? { ...p, name: trimmed } : p)));
+      setShowRenameForm(false); setRenameError("");
+      setNotice(`Renamed this profile to “${trimmed}”. Its records, savings and history are unchanged.`);
+    } catch (error) { setRenameError(errorMessage(error)); }
   }
 
   function resetRecordForm(nextCurrency: string) {
@@ -831,7 +856,26 @@ export default function PersonalPage() {
               >
                 New personal profile
               </button>
+              <button className="btn ghost small" type="button" aria-expanded={showRenameForm} onClick={() => { setRenameName(activeProfile.name); setRenameError(""); setShowRenameForm((v) => !v); }}>
+                Rename profile
+              </button>
             </div>
+          )}
+
+          {showRenameForm && activeProfile && (
+            <form className="card inline-form" onSubmit={onRenameProfile} noValidate>
+              <h2 className="inline-form-title">Rename “{activeProfile.name}”</h2>
+              <p className="muted">Only the display name changes — this profile's ID, records, savings goals and history stay exactly as they are.</p>
+              <div className="field">
+                <label htmlFor="personal-rename-name">Profile name</label>
+                <input id="personal-rename-name" className="input" type="text" value={renameName} onChange={(e) => setRenameName(e.target.value)} autoComplete="off" />
+              </div>
+              {renameError && <p className="alert-error" role="alert">{renameError}</p>}
+              <div className="row-actions">
+                <button className="btn" type="submit">Save name</button>
+                <button className="btn ghost" type="button" onClick={() => setShowRenameForm(false)}>Cancel</button>
+              </div>
+            </form>
           )}
 
           {showProfileForm && (
@@ -937,23 +981,18 @@ export default function PersonalPage() {
                 <section className="txn-summaries" aria-label="Personal net cash flow by currency">
                   {summaries.map((s) => (
                     <div key={s.currency} className="txn-summary">
-                      <h2>{s.currency}</h2>
+                      <h2 className="sr-only">Summary in {s.currency}</h2>
                       <dl>
-                        <div><dt>Income</dt><dd className="amount-in">{formatMoney(s.income, s.currency)}</dd></div>
-                        <div><dt>Expenses</dt><dd className="amount-out">{formatMoney(s.expense, s.currency)}</dd></div>
-                        <div><dt>Net cash flow</dt><dd className={s.net < 0 ? "amount-out" : "amount-in"}>{formatMoney(s.net, s.currency)}</dd></div>
+                        <div><span className="personal-metric-icon amount-in" aria-hidden="true"><Icon name="income" /></span><dt>Income</dt><dd className="amount-in">{formatMoney(s.income, s.currency)}</dd></div>
+                        <div><span className="personal-metric-icon amount-out" aria-hidden="true"><Icon name="expenses" /></span><dt>Expenses</dt><dd className="amount-out">{formatMoney(s.expense, s.currency)}</dd></div>
+                        <div><span className="personal-metric-icon" aria-hidden="true"><Icon name="transfer" /></span><dt>Net cash flow</dt><dd className={s.net < 0 ? "amount-out" : "amount-in"}>{formatMoney(s.net, s.currency)}</dd></div>
                       </dl>
                     </div>
                   ))}
                   <p className="muted txn-summary-note">
-                    Net cash flow is recorded personal income minus recorded
-                    personal expenses, per currency. It is not a bank or account
-                    balance — Bucketa only knows amounts you record here.
-                    These totals are based on {incomeExpenseCount} income and
-                    expense {incomeExpenseCount === 1 ? "record" : "records"} of{" "}
-                    {transactions.length} total{" "}
-                    {transactions.length === 1 ? "record" : "records"}; savings
-                    deposits and withdrawals are not counted.
+                    Recorded income minus expenses, not a bank balance or profit.
+                    Savings movements are excluded; currencies stay separate.
+                    Based on {incomeExpenseCount} income/expense {incomeExpenseCount === 1 ? "record" : "records"} of {transactions.length} total records.
                   </p>
                   <div className="row-actions">
                     <button
@@ -1149,7 +1188,7 @@ export default function PersonalPage() {
                 </form>
               )}
 
-              <section className="panel" aria-labelledby="savings-heading">
+              <section className="panel personal-savings" aria-labelledby="savings-heading">
                 <div className="panel-head">
                   <h2 id="savings-heading">Savings &amp; budgets</h2>
                   <button
@@ -1206,14 +1245,12 @@ export default function PersonalPage() {
                           </label>
                         )}
                         {goalBucket && progress ? (
-                          <p className="muted bucket-meta">
-                            {goalBucket.name}: {formatMoney(progress.savedMinor, goalBucket.currency)}{" "}
-                            of {formatMoney(goalBucket.targetMinor ?? 0, goalBucket.currency)} goal
-                            ({Math.round(progress.percent)}% full)
-                            {progress.percent >= 100
-                              ? " — goal reached, well done!"
-                              : " from records assigned to this bucket."}
-                          </p>
+                          <div className="personal-goal-progress">
+                            <progress max={100} value={progress.percent} aria-label={`${goalBucket.name} savings goal`} />
+                            <p><strong>{formatMoney(progress.savedMinor, goalBucket.currency)}</strong><span> / {formatMoney(goalBucket.targetMinor ?? 0, goalBucket.currency)}</span><strong>{progress.actualPercent.toLocaleString(DEFAULT_LOCALE,{maximumFractionDigits:1})}%</strong></p>
+                            {progress.percent >= 100 && <span className="goal-complete">Goal Reached! 🎉</span>}
+                            {progress.overTargetMinor > 0 && <p className="muted">{formatMoney(progress.overTargetMinor,goalBucket.currency)} above target</p>}
+                          </div>
                         ) : (
                           <p className="muted bucket-meta">
                             Set a goal amount on a savings or budget bucket and
@@ -1367,13 +1404,13 @@ export default function PersonalPage() {
                   </form>
                 )}
                 {buckets.length === 0 ? (
-                  <p className="muted">
+                  <p className="muted savings-empty">
                     No savings or budgets yet. Create one to set money aside, then
                     assign personal records to it.
                   </p>
                 ) : (
-                  <ul className="bucket-list clean-list">
-                    {buckets.map((bucket) => {
+                  <ul className="bucket-list clean-list savings-list">
+                    {(showAllBuckets ? buckets : buckets.slice(0, 3)).map((bucket) => {
                       const assigned = bucketAssigned(bucket);
                       const balances = bucketCashFlows(bucket);
                       const goal = bucketGoalProgress(transactions, bucket);
@@ -1386,7 +1423,7 @@ export default function PersonalPage() {
                               {assigned.length === 1 ? "record" : "records"}
                               {balances.length > 0
                                 ? ` · ${balances.map((b) => `${b.currency} net cash flow ${formatMoney(b.net, b.currency)}`).join(" · ")}`
-                                : " · No assigned records yet"}
+                                : assigned.length ? " · No income or expense records" : " · No assigned records yet"}
                             </p>
                             {bucket.kind === "savings" && goal && bucket.targetMinor ? (
                               <p className="muted bucket-meta">
@@ -1396,7 +1433,7 @@ export default function PersonalPage() {
                                   Math.max(0, bucket.targetMinor - goal.savedMinor),
                                   bucket.currency,
                                 )}{" "}
-                                remaining · {Math.round(goal.percent)}% full
+                                remaining · {goal.actualPercent.toLocaleString(DEFAULT_LOCALE,{maximumFractionDigits:1})}% achieved
                               </p>
                             ) : bucket.kind === "savings" ? (
                               <p className="muted bucket-meta">
@@ -1408,7 +1445,7 @@ export default function PersonalPage() {
                             {bucket.kind === "savings" && (
                               <>
                                 <button
-                                  className="btn ghost small"
+                                  className="btn small savings-deposit"
                                   type="button"
                                   onClick={() => startMovement(bucket, "savings-deposit")}
                                 >
@@ -1423,28 +1460,40 @@ export default function PersonalPage() {
                                 </button>
                               </>
                             )}
-                            <button className="btn ghost small" type="button" onClick={() => startEditBucket(bucket)}>
+                            <details className="savings-actions" onKeyDown={event => {if(event.key === "Escape"){event.currentTarget.open=false;event.currentTarget.querySelector("summary")?.focus();}}}>
+                            <summary aria-label={`More actions for ${bucket.name}`}><Icon name="more" /></summary>
+                            <div className="savings-actions-popover">
+                            <button className="btn ghost small" type="button" onClick={event => {event.currentTarget.closest("details")?.removeAttribute("open");startEditBucket(bucket);requestAnimationFrame(()=>document.getElementById("personal-bucket-name")?.focus());}}>
                               Edit
                             </button>
                             <button
                               className="danger-link"
                               type="button"
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.currentTarget.closest("details")?.removeAttribute("open");
                                 setDeleteBucket(bucket);
                                 setDeleteError("");
+                                requestAnimationFrame(()=>document.getElementById("bucket-delete-heading")?.focus());
                               }}
                             >
                               Delete…
                             </button>
+                            </div></details>
                           </div>
                         </li>
                       );
                     })}
                   </ul>
                 )}
+                {buckets.length > 3 && (
+                  <div className="history-more savings-more">
+                    <span className="muted">Showing {showAllBuckets ? buckets.length : 3} of {buckets.length} goals</span>
+                    <button className="btn ghost small" type="button" aria-expanded={showAllBuckets} onClick={() => setShowAllBuckets((v) => !v)}>{showAllBuckets ? "Show less" : "See more"}</button>
+                  </div>
+                )}
                 {deleteBucket && (
                   <section className="delete-panel" role="alertdialog" aria-labelledby="bucket-delete-heading">
-                    <h3 id="bucket-delete-heading">Delete “{deleteBucket.name}”?</h3>
+                    <h3 id="bucket-delete-heading" tabIndex={-1}>Delete “{deleteBucket.name}”?</h3>
                     <p>
                       {bucketAssigned(deleteBucket).length > 0
                         ? `${bucketAssigned(deleteBucket).length} record(s) are assigned to it, so it cannot be deleted yet. Edit those records to unassign them first.`
@@ -1468,17 +1517,14 @@ export default function PersonalPage() {
                 )}
               </section>
 
-              <section className="panel" aria-labelledby="categories-heading">
+              <section className="panel personal-categories" aria-labelledby="categories-heading">
                 <div className="panel-head">
                   <h2 id="categories-heading">Categories</h2>
                   <span className="count-badge">{categories.length}</span>
                 </div>
                 {categoryError && <p className="alert-error" role="alert">{categoryError}</p>}
                 {categories.length === 0 ? (
-                  <p className="muted">
-                    No categories yet. Type a category when adding a record and it
-                    will appear here to rename or remove.
-                  </p>
+                  <div className="personal-category-empty"><Icon name="buckets" /><div><strong>No categories yet</strong><p className="muted">Add a category to a record to organize your finances.</p></div><button className="btn ghost small" type="button" onClick={() => {if(!showRecordForm){resetRecordForm(activeProfile.currency);setShowRecordForm(true);}requestAnimationFrame(()=>document.getElementById("personal-category")?.focus());}}>Add record with category</button></div>
                 ) : (
                   <ul className="bucket-list clean-list">
                     {categories.map((entry) => (
@@ -1596,13 +1642,14 @@ export default function PersonalPage() {
                 <div className="panel-head">
                   <h2 id="personal-history-heading">Personal history</h2>
                   <span className="count-badge">
-                    {`${transactions.length} ${transactions.length === 1 ? "record" : "records"}`}
+                    {`${personalHistory.matches.length} ${personalHistory.matches.length === 1 ? "record" : "records"}`}
                   </span>
                 </div>
-                {transactions.length === 0 ? (
+                <HistoryControls view={personalHistory}/>
+                {personalHistory.matches.length === 0 ? (
                   <div className="empty-state dash-empty">
-                    <p>No personal records yet.</p>
-                    <p className="muted">Add your first income or expense to start this history.</p>
+                    <p>{transactions.length ? "No records match these history filters." : "No personal records yet."}</p>
+                    <p className="muted">{transactions.length ? "Try another date range or currency. Your saved records are unchanged." : "Add your first income or expense to start this history."}</p>
                     <div className="row-actions">
                       <button
                         className="btn ghost small"
@@ -1618,7 +1665,7 @@ export default function PersonalPage() {
                   </div>
                 ) : (
                   <ul className="txn-list">
-                    {transactions.map((txn) => {
+                    {personalHistory.visible.map((txn) => {
                       const editable = isCorrectableTransaction(txn);
                       const assigned = bucketSelectName(txn.bucketId);
                       return (
@@ -1661,6 +1708,7 @@ export default function PersonalPage() {
                     })}
                   </ul>
                 )}
+              <HistoryMore view={personalHistory}/>
               </section>
             </>
           )}

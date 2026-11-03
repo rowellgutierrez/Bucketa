@@ -61,6 +61,8 @@ export interface BuckyAdviceOptions {
   mode?: "fallback" | "live";
   /** Runtime-supplied local live-test token; never hard-coded or stored. */
   liveTestToken?: string;
+  /** Bounded recent turns (max 6) for conversational context. */
+  history?: { role: "user" | "bucky"; text: string }[];
 }
 
 function isAdviceResponse(payload: unknown): payload is BuckyAdviceResponse {
@@ -110,7 +112,7 @@ export async function requestBuckyAdvice(
     response = await fetch("/api/bucky/advise", {
       method: "POST",
       headers,
-      body: JSON.stringify({ question, mode, summary }),
+      body: JSON.stringify({ question, mode, summary, ...(options.history?.length ? { history: options.history.slice(-6) } : {}) }),
       signal: controller.signal,
     });
   } catch {

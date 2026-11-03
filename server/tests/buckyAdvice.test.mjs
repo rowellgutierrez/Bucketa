@@ -40,10 +40,36 @@ function payload(over = {}) {
   return { question: "How is my cash flow?", mode: "fallback", summary: summary(), ...over };
 }
 
+test("validateAdviceRequest accepts bounded history and rejects oversized history", () => {
+  const ok = validateAdviceRequest(payload({ history: [{ role: "user", text: "Hi" }, { role: "bucky", text: "Hello" }] }));
+  assert.equal(ok.history.length, 2);
+  assert.throws(() => validateAdviceRequest(payload({ history: Array.from({ length: 7 }, () => ({ role: "user", text: "x" })) })), /could not be understood/);
+  assert.throws(() => validateAdviceRequest(payload({ history: [{ role: "system", text: "x" }] })), /could not be understood/);
+  const general = buildDeterministicAdvice({ question: "Hello, who are you?", summary: summary({ currencies: [] }), history: ok.history });
+  assert.match(general.answer, /Bucky/);
+  assert.deepEqual(general.evidence, []);
+});
+
 test("validateAdviceRequest accepts the aggregated summary shape and normalises it", () => {
   const v = validateAdviceRequest(payload({ question: "  How   is my cash flow? " }));
   assert.equal(v.question, "How is my cash flow?");
   assert.equal(v.summary.currencies[0].currency, "PHP");
+});
+
+test("validateAdviceRequest accepts every insight kind the client can send, including salary", () => {
+  // Regression: buildBuckyModelSummary copies analysis.insights kinds
+  // verbatim, and any profile with a recorded Salaries expense produces a
+  // "salary" insight. The server allowlist once omitted "salary", so every
+  // live advice request for such a profile was rejected as invalid_request
+  // BEFORE the live gate/limiter — the UI showed "AI Insights could not
+  // understand that request" and the live counter never moved.
+  const kinds = ["cash-flow", "categories", "month-change", "duplicates", "savings", "inventory", "pos", "data-quality", "salary"];
+  const v = validateAdviceRequest(payload({ summary: summary({ insightKinds: kinds }) }));
+  assert.deepEqual(v.summary.insightKinds, kinds);
+  assert.throws(
+    () => validateAdviceRequest(payload({ summary: summary({ insightKinds: ["cash-flow", "made-up-kind"] }) })),
+    /could not be understood/,
+  );
 });
 
 test("validateAdviceRequest rejects raw-record smuggling and unknown keys", () => {
@@ -66,6 +92,28 @@ test("validateAdviceRequest rejects bad amounts, currencies, modes, and overlong
   const badCode = summary();
   badCode.currencies[0] = { ...badCode.currencies[0], currency: "php!" };
   assert.throws(() => validateAdviceRequest(payload({ summary: badCode })), /could not be understood/);
+});
+
+test("savings goal context is strictly validated and grounds goal answers", () => {
+  const withGoals = summary({
+    savingsGoals: [{ name: "iPhone", currency: "PHP", targetMinor: 5000000, savedMinor: 1250000, remainingMinor: 3750000 }],
+  });
+  const v = validateAdviceRequest(payload({ summary: withGoals }));
+  assert.deepEqual(v.summary.savingsGoals, withGoals.savingsGoals);
+  // Inconsistent remaining, bad currency, smuggled keys, and too many goals are rejected.
+  assert.throws(() => validateAdviceRequest(payload({ summary: summary({ savingsGoals: [{ name: "iPhone", currency: "PHP", targetMinor: 100, savedMinor: 10, remainingMinor: 10 }] }) })), /could not be understood/);
+  assert.throws(() => validateAdviceRequest(payload({ summary: summary({ savingsGoals: [{ name: "iPhone", currency: "php!", targetMinor: 100, savedMinor: 10, remainingMinor: 90 }] }) })), /could not be understood/);
+  assert.throws(() => validateAdviceRequest(payload({ summary: summary({ savingsGoals: [{ name: "iPhone", currency: "PHP", targetMinor: 100, savedMinor: 10, remainingMinor: 90, records: [] }] }) })), /could not be understood/);
+  assert.throws(() => validateAdviceRequest(payload({ summary: summary({ savingsGoals: Array.from({ length: 11 }, (_, i) => ({ name: `G${i}`, currency: "PHP", targetMinor: 100, savedMinor: 0, remainingMinor: 100 })) }) })), /could not be understood/);
+  // Deterministic fallback answers a named-goal question from the context.
+  const advice = buildDeterministicAdvice({ question: "How much have I saved for my iPhone goal and how much is left?", summary: v.summary });
+  assert.match(advice.answer, /iPhone/);
+  assert.match(advice.answer, /PHP 12500\.00/);
+  assert.match(advice.answer, /PHP 37500\.00/);
+  assert.ok(advice.evidence.some((e) => /Savings goal: iPhone/.test(e.label)));
+  // Goal figures ground model output; invented goal figures do not.
+  assert.deepEqual(findUngroundedNumbers("You saved PHP 12500.00 toward iPhone, with PHP 37500.00 to go.", v.summary), []);
+  assert.ok(findUngroundedNumbers("You saved PHP 9999.99 toward iPhone.", v.summary).includes("9999.99"));
 });
 
 test("formatMinor respects zero-decimal currencies", () => {
@@ -212,6 +260,21 @@ test("live advise without gates is an explicit error, never a silent fallback", 
     const { status, json } = await postAdvise(base, payload({ mode: "live" }));
     assert.equal(status, 403);
     assert.equal(json.error, "live_disabled");
+  });
+});
+
+test("live advise for a profile with salary insights reaches the live gate, not validation", async () => {
+  // Same regression at the HTTP layer: a valid salary-bearing summary must
+  // pass validation and be stopped only by the live gate (403), consuming
+  // no limiter slot — a 400 here was the reported failure, with the health
+  // counter frozen because the limiter is only consumed after the gate.
+  await withServer(mockConfig, {}, async (base) => {
+    const salaryPayload = payload({ mode: "live", summary: summary({ insightKinds: ["cash-flow", "salary"] }) });
+    const { status, json } = await postAdvise(base, salaryPayload);
+    assert.equal(status, 403);
+    assert.equal(json.error, "live_disabled");
+    const health = await (await fetch(`${base}/api/health`)).json();
+    assert.equal(health.liveRequestsUsed, 0);
   });
 });
 

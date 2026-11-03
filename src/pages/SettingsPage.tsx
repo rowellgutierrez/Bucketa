@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import PageHeader from "../components/ui/PageHeader";
 import Card from "../components/ui/Card";
+import DemoWorkspace from "../components/DemoWorkspace";
 import {
   DEFAULT_VOICE_SETTINGS,
   loadVoiceSettings,
@@ -8,9 +9,19 @@ import {
   saveVoiceSettings,
   type VoiceSettings,
 } from "../lib/buckyVoiceSettings";
+import { loadOwnerProfile, onOwnerProfileChanged, saveOwnerProfile, type OwnerProfile } from "../lib/ownerProfile";
+import { getBuckyLiveSettings, subscribeBuckyLiveSettings, updateBuckyLiveSettings } from "../lib/buckyLiveSettings";
 
 export default function SettingsPage() {
   const [voice, setVoice] = useState<VoiceSettings>(() => loadVoiceSettings());
+  // Bucky live Meta AI: memory-only shared state (buckyLiveSettings).
+  // Neither the toggle nor the token is ever persisted on this device.
+  const live = useSyncExternalStore(subscribeBuckyLiveSettings, getBuckyLiveSettings, getBuckyLiveSettings);
+  const [owner, setOwner] = useState<OwnerProfile>(() => loadOwnerProfile());
+  useEffect(() => onOwnerProfileChanged(setOwner), []);
+  function updateOwner(patch: Partial<OwnerProfile>) {
+    setOwner((prev) => saveOwnerProfile({ ...prev, ...patch }));
+  }
 
   // Stay in sync if Bucky's own Voice on/off toggle changes the same
   // preferences while this page is open (and vice versa).
@@ -39,12 +50,57 @@ export default function SettingsPage() {
         description="Preferences for Bucketa on this device."
       />
 
+      <Card className="settings-card" aria-labelledby="owner-profile-heading">
+        <div className="settings-section-head"><h2 id="owner-profile-heading">Owner Profile</h2><p className="muted">Your name lives only on this device (browser storage). It never changes business records, currencies, or profiles in your database.</p></div>
+        <div className="settings-fields">
+          <div className="field"><label htmlFor="owner-first-name">First name</label><input id="owner-first-name" className="input" value={owner.firstName} onChange={(e) => updateOwner({ firstName: e.target.value })} autoComplete="given-name" placeholder="e.g. Maria" /></div>
+          <div className="field"><label htmlFor="owner-last-name">Last name</label><input id="owner-last-name" className="input" value={owner.lastName} onChange={(e) => updateOwner({ lastName: e.target.value })} autoComplete="family-name" placeholder="e.g. Santos" /></div>
+        </div>
+        <div className="settings-row">
+          <div><strong>Greeting on Home</strong><p className="field-hint">Home says hello using your first name.</p></div>
+          <button className="btn ghost settings-toggle" type="button" aria-pressed={owner.showGreeting} onClick={() => updateOwner({ showGreeting: !owner.showGreeting })}>{owner.showGreeting ? "On" : "Off"}</button>
+        </div>
+      </Card>
+
       <Card className="settings-card" aria-labelledby="bucky-voice-heading">
-        <h2 id="bucky-voice-heading">Bucky &amp; Voice</h2>
+        <div className="settings-section-head"><h2 id="bucky-voice-heading">Bucky &amp; Voice</h2>
         <p className="muted">
           Voice preferences save automatically on this device. Your browser
           controls voice availability and may ignore pitch or volume.
-        </p>
+        </p></div>
+
+        <div className="settings-row">
+          <div>
+            <strong>Live Meta AI for Bucky</strong>
+            <p className="field-hint">Off by default. When on, ordinary Bucky questions (typed or spoken) are answered by the live Meta model through Bucketa's gated server — one request per question, sharing the server's limit of 3 live requests per server session across Bucky, the Scanner, and Creative Studio. When off, Bucky answers deterministically from your recorded data and no paid request is made.</p>
+          </div>
+          <button
+            className="btn ghost settings-toggle"
+            type="button"
+            aria-pressed={live.enabled}
+            onClick={() => updateBuckyLiveSettings({ enabled: !live.enabled })}
+          >
+            {live.enabled ? "On" : "Off"}
+          </button>
+        </div>
+
+        {live.enabled && (
+          <div className="settings-row settings-row-control">
+            <div>
+              <label htmlFor="bucky-live-token-setting"><strong>Live test token</strong></label>
+              <p className="field-hint">From the local server operator. Kept only in this app's memory for this session — never saved to this device, and cleared when the app reloads. Bucky cannot send live requests without it.</p>
+            </div>
+            <input
+              id="bucky-live-token-setting"
+              className="input settings-control"
+              type="password"
+              autoComplete="off"
+              value={live.token}
+              onChange={(e) => updateBuckyLiveSettings({ token: e.target.value })}
+              placeholder="Token from the local server operator"
+            />
+          </div>
+        )}
 
         <div className="settings-row">
           <div>
@@ -52,7 +108,7 @@ export default function SettingsPage() {
             <p className="field-hint">Bucky speaks answers aloud after voice questions and Listen taps.</p>
           </div>
           <button
-            className="btn ghost"
+            className="btn ghost settings-toggle"
             type="button"
             aria-pressed={voice.responsesOn}
             onClick={() => update({ responsesOn: !voice.responsesOn })}
@@ -61,9 +117,9 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        <div className="field"><label htmlFor="settings-speech-language">Speech input language</label>
-          <select id="settings-speech-language" className="input" value={voice.language ?? 'en-US'} onChange={event => update({language: event.target.value as 'en-US' | 'fil-PH'})}><option value="en-US">English</option><option value="fil-PH">Filipino / Tagalog</option></select>
-          <p className="field-hint">Availability depends on your browser. Bucky's written and spoken answers currently use English.</p>
+        <div className="settings-row settings-row-control"><div><label htmlFor="settings-speech-language"><strong>Speech input language</strong></label>
+          <p className="field-hint">Availability depends on your browser. Bucky's written and spoken answers currently use English.</p></div>
+          <select id="settings-speech-language" className="input settings-control" value={voice.language ?? 'en-US'} onChange={event => update({language: event.target.value as 'en-US' | 'fil-PH'})}><option value="en-US">English</option><option value="fil-PH">Filipino / Tagalog</option></select>
         </div>
         <div className="settings-sliders">
           <label htmlFor="settings-voice-volume">
@@ -118,6 +174,7 @@ export default function SettingsPage() {
           <a className="btn ghost" href="#/dashboard">Open Bucky on Home</a>
         </div>
       </Card>
+      <DemoWorkspace/>
       <Card className="help-guide" aria-labelledby="help-guide-heading">
         <h2 id="help-guide-heading">Help &amp; Guide</h2>
         <p className="muted">A quick guide to your workspace. Financial records stay in this browser, separated by profile and currency.</p>

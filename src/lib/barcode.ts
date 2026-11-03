@@ -78,3 +78,24 @@ export function findProductByBarcode(
 export function shouldAcceptScan(last: {code:string;at:number}|null, code:string, _now:number): boolean {
  return !!normalizeBarcode(code) && last === null;
 }
+
+/**
+ * POS Smart Scan dedupe (Phase D). Ordinary scans auto-add with no popup;
+ * the same code re-detected within the cooldown is an accidental duplicate
+ * and is ignored, while a different code — or the same code after the
+ * cooldown (an intentional second unit) — is accepted.
+ */
+export const POS_SCAN_COOLDOWN_MS = 1500;
+
+export function shouldAcceptPosScan(
+  last: { code: string; at: number } | null,
+  code: string,
+  now: number,
+  cooldownMs = POS_SCAN_COOLDOWN_MS,
+): boolean {
+  const wanted = normalizeBarcode(code);
+  if (!wanted) return false;
+  if (!last) return true;
+  if (normalizeBarcode(last.code) !== wanted) return true;
+  return now - last.at >= cooldownMs;
+}

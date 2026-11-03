@@ -78,6 +78,29 @@ const SYMBOL_CURRENCIES: Record<string, string> = {
 const QUESTION_START = /^(how|what|why|when|which|who|do|does|did|is|are|can|could|show|tell|give me)\b/i;
 const IMPERATIVE_START = /^(record|add|log|pay|paid|deposit|contribute|put|spent|received|earned|create|save)\b/i;
 
+/**
+ * Read-only financial analysis questions ("Summarize my recorded income…",
+ * "Analyze my current PHP financial summary") are Q&A, never transaction
+ * commands — even though they mention income/expenses. Explicit creation
+ * commands start with an imperative write verb ("Record ₱500 income…",
+ * "Add ₱100 to my iPhone goal") and are never classified as analysis, so
+ * every write safeguard and confirmation stays intact.
+ */
+export function isFinancialAnalysisQuestion(text: string): boolean {
+  const raw = text.trim();
+  if (!raw) return false;
+  if (IMPERATIVE_START.test(raw)) return false;
+  const lower = raw.toLowerCase();
+  const financialTopic =
+    /\b(income|expenses?|spending|cash flow|finances?|financial|revenue|sales|savings|goals?|buckets?|categories|budget|summary|overview)\b/.test(lower);
+  if (!financialTopic) return false;
+  const analysisLead =
+    /^(summarize|summarise|analyze|analyse|explain|describe|review|compare|break down|show|tell|list|report)\b/i.test(raw);
+  const analysisPhrase =
+    /\b(financial summary|summary of|overview of|net cash flow|income, expenses|income and expenses|analyze my|analyse my|summarize my|summarise my)\b/.test(lower);
+  return analysisLead || analysisPhrase || raw.includes("?") || QUESTION_START.test(raw);
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -174,6 +197,7 @@ function cleanPhrase(value: string): string {
   return value
     .replace(/[.!?]+$/g, "")
     .replace(/\s+/g, " ")
+    .trim()
     .replace(/^(the|a|an)\s+/i, "")
     .trim();
 }
@@ -547,6 +571,8 @@ export function interpretBuckyAction(text: string, ctx: BuckyActionContext): Buc
 
   // Ordinary questions are analysis, never actions.
   if (QUESTION_START.test(raw) && !IMPERATIVE_START.test(raw)) return { status: "not-action" };
+  // Read-only financial analysis questions are Q&A, never write commands.
+  if (isFinancialAnalysisQuestion(raw)) return { status: "not-action" };
 
   // Destructive or out-of-scope verbs are honestly declined, never executed.
   if (/\b(delete|remove|erase|edit|update|rename|undo)\b/.test(lower)) return { status: "unsupported" };
@@ -596,7 +622,7 @@ export function interpretBuckyAction(text: string, ctx: BuckyActionContext): Buc
   if (/\b(transfer|send|move)\b/.test(lower)) return { status: "unsupported" };
 
   // Income / expense records.
-  const isExpense = /\bexpense\b/.test(lower) || /\bspent\b/.test(lower) || /^paid\b/.test(lower);
+  const isExpense = /\bexpenses?\b/.test(lower) || /\bspent\b/.test(lower) || /^paid\b/.test(lower);
   const isIncome = /\bincome\b/.test(lower) || /\b(received|earned)\b/.test(lower);
   if (isExpense && isIncome) {
     return { status: "clarification", question: "Should that be recorded as income or as an expense? Please say one. Nothing was saved." };
@@ -655,7 +681,8 @@ export interface ProposedBuckyProduct {
   sku: null;
   category: null;
   costMinor: null;
-  stock: 0;
+  /** Opening stock: 0 unless the command explicitly states it. */
+  stock: number;
   status: "active";
   warnings: string[];
 }
@@ -716,12 +743,25 @@ export function interpretBuckyProductCommand(
     };
   }
 
+  // Explicit opening stock ("stock 20", "with 20 in stock"); default 0.
+  let openingStock = 0;
+  const stockMatch = /\bstock\s*(?:of\s*)?(\d{1,7})\b/i.exec(raw) ?? /\b(\d{1,7})\s+(?:in stock|units? in stock)\b/i.exec(raw);
+  if (stockMatch) {
+    const parsed = Number(stockMatch[1]);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return { status: "clarification", question: "Opening stock must be a whole number of units, for example \"stock 20\". Nothing was created." };
+    }
+    openingStock = parsed;
+  }
+
   // Name: the text that remains once the command scaffolding and the
   // price clause are removed. The price clause ("selling price is ₱35")
   // is stripped first so its amount cannot leak into the name. The
   // clause runs to the next comma or the end of the text — not to the
   // first period, which may be a decimal point inside the price.
   let rest = raw
+    .replace(/\bstock\s*(?:of\s*)?\d{1,7}\b/gi, " ")
+    .replace(/\b\d{1,7}\s+(?:in stock|units? in stock)\b/gi, " ")
     .replace(/^bucky[,.]?\s+/i, " ")
     .replace(/\b(?:selling\s+price|price|costs?)\b[^,]*/i, " ")
     .replace(token.raw, " ")
@@ -761,7 +801,7 @@ export function interpretBuckyProductCommand(
       sku: null,
       category: null,
       costMinor: null,
-      stock: 0,
+      stock: openingStock,
       status: "active",
       warnings,
     },

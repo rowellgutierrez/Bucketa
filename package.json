@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "server": "node server/server.mjs",
+    "health": "node -e \"fetch('http://127.0.0.1:8787/api/health').then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2))).catch(()=>{console.error('Bucketa server not reachable on 127.0.0.1:8787 - run npm run server first.');process.exit(1)})\"",
     "test:server": "node --test \"server/tests/*.test.mjs\"",
     "test:data": "node --test src/data/validation.test.ts",
-    "test:lib": "node --test src/lib/scannerReview.test.ts src/lib/scannerApi.test.ts src/lib/buckyAgent.test.ts src/lib/buckyApi.test.ts src/lib/transactionCorrection.test.ts src/lib/buckySavingsEvents.test.ts src/lib/buckyVoice.test.ts src/lib/buckyActions.test.ts src/lib/employees.test.ts src/lib/dataChange.test.ts src/lib/historyScope.test.ts src/lib/buckyVoiceSettings.test.ts",
+    "test:lib": "node --test \"src/lib/*.test.ts\" \"src/lib/*.test.mjs\"",
     "test": "npm run test:server && npm run test:data && npm run test:lib && npm run typecheck"
   },
   "dependencies": {

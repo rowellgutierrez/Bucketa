@@ -228,7 +228,7 @@ export async function sendToMeta(request, fetchImpl = fetch, options = {}) {
  * Live compatibility of text reasoning on this model is NOT verified —
  * it is only ever sent through the live gates in server.mjs.
  */
-export function buildMetaAdviceRequest({ question, summary, apiKey }) {
+export function buildMetaAdviceRequest({ question, summary, history = [], apiKey }) {
   return {
     url: `${META_API_BASE_URL}/responses`,
     method: "POST",
@@ -243,7 +243,7 @@ export function buildMetaAdviceRequest({ question, summary, apiKey }) {
           type: "message",
           role: "user",
           content: [
-            { type: "input_text", text: buildBuckyAdvicePrompt({ question, summary }) },
+            { type: "input_text", text: buildBuckyAdvicePrompt({ question, summary, history }) },
           ],
         },
       ],

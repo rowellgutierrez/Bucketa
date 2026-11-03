@@ -29,7 +29,7 @@ export const BUCKY_ALLOWED_ACTIONS = {
 
 const INSIGHT_KINDS = [
   "cash-flow", "categories", "month-change", "duplicates",
-  "savings", "inventory", "pos", "data-quality",
+  "savings", "inventory", "pos", "data-quality", "salary",
 ];
 
 function isRecord(value) {
@@ -70,9 +70,24 @@ export function formatMinor(amountMinor, currency) {
  * throws a safe PublicError. Unknown keys are rejected so raw records or
  * unexpected fields can never be smuggled into a model prompt.
  */
+export const BUCKY_HISTORY_MAX_TURNS = 6;
+export const BUCKY_HISTORY_MAX_CHARS = 500;
+
 export function validateAdviceRequest(payload) {
-  if (!isRecord(payload) || !hasOnlyKeys(payload, ["question", "mode", "summary"])) {
+  if (!isRecord(payload) || !hasOnlyKeys(payload, ["question", "mode", "summary", "history"])) {
     throw errors.invalidRequest();
+  }
+  // Bounded conversation history: at most 6 short turns, roles only.
+  let history = [];
+  if (payload.history !== undefined) {
+    if (!Array.isArray(payload.history) || payload.history.length > BUCKY_HISTORY_MAX_TURNS) throw errors.invalidRequest();
+    history = payload.history.map((turn) => {
+      if (!isRecord(turn) || !hasOnlyKeys(turn, ["role", "text"])) throw errors.invalidRequest();
+      if (turn.role !== "user" && turn.role !== "bucky") throw errors.invalidRequest();
+      const text = cleanString(turn.text, BUCKY_HISTORY_MAX_CHARS);
+      if (!text) throw errors.invalidRequest();
+      return { role: turn.role, text };
+    });
   }
   const question = cleanString(payload.question, BUCKY_QUESTION_MAX_LENGTH);
   if (!question) throw errors.invalidRequest();
@@ -82,7 +97,7 @@ export function validateAdviceRequest(payload) {
   const s = payload.summary;
   if (
     !isRecord(s) ||
-    !hasOnlyKeys(s, ["profileName", "profileKind", "currencies", "insightKinds", "duplicateGroupCount", "lowStockCount", "limitations"])
+    !hasOnlyKeys(s, ["profileName", "profileKind", "currencies", "insightKinds", "duplicateGroupCount", "lowStockCount", "savingsGoals", "limitations"])
   ) {
     throw errors.invalidRequest();
   }
@@ -140,9 +155,36 @@ export function validateAdviceRequest(payload) {
   const limitations = s.limitations.map((l) => cleanString(l, 300));
   if (limitations.some((l) => l === null)) throw errors.invalidRequest();
 
+  // Optional bounded savings-goal context (selected profile only, supplied
+  // by the client from its own computed analysis). Strictly validated:
+  // allowlisted keys, valid currency, positive target, and remaining must
+  // be exactly max(0, target - saved) so figures cannot be smuggled or
+  // cross-combined between currencies.
+  let savingsGoals = [];
+  if (s.savingsGoals !== undefined) {
+    if (!Array.isArray(s.savingsGoals) || s.savingsGoals.length > 10) throw errors.invalidRequest();
+    savingsGoals = s.savingsGoals.map((g) => {
+      if (
+        !isRecord(g) ||
+        !hasOnlyKeys(g, ["name", "currency", "targetMinor", "savedMinor", "remainingMinor"]) ||
+        !isValidCurrencyCode(g.currency) ||
+        !isSafeAmount(g.targetMinor) || g.targetMinor <= 0 ||
+        !isSafeAmount(g.savedMinor) ||
+        !isSafeAmount(g.remainingMinor) || g.remainingMinor < 0 ||
+        g.remainingMinor !== Math.max(0, g.targetMinor - g.savedMinor)
+      ) {
+        throw errors.invalidRequest();
+      }
+      const name = cleanString(g.name, 80);
+      if (!name) throw errors.invalidRequest();
+      return { name, currency: g.currency, targetMinor: g.targetMinor, savedMinor: g.savedMinor, remainingMinor: g.remainingMinor };
+    });
+  }
+
   return {
     question,
     mode,
+    history,
     summary: {
       profileName,
       profileKind: s.profileKind,
@@ -150,6 +192,7 @@ export function validateAdviceRequest(payload) {
       insightKinds: [...s.insightKinds],
       duplicateGroupCount: s.duplicateGroupCount,
       lowStockCount: s.lowStockCount,
+      savingsGoals,
       limitations,
     },
   };
@@ -173,13 +216,19 @@ export function buildVerifiedEvidence(summary) {
       evidence.push({ label: `${c.currency} expense change vs last month`, value: `${c.monthExpenseChangePct.toFixed(0)}%` });
     }
   }
+  for (const g of summary.savingsGoals ?? []) {
+    evidence.push({
+      label: `Savings goal: ${g.name} (${g.currency})`,
+      value: `Saved ${formatMinor(g.savedMinor, g.currency)} of ${formatMinor(g.targetMinor, g.currency)} · Remaining ${formatMinor(g.remainingMinor, g.currency)}`,
+    });
+  }
   if (summary.duplicateGroupCount > 0) {
     evidence.push({ label: "Possible duplicate groups", value: String(summary.duplicateGroupCount) });
   }
   if (summary.lowStockCount > 0) {
     evidence.push({ label: "Low-stock products", value: String(summary.lowStockCount) });
   }
-  return evidence.slice(0, 8);
+  return evidence.slice(0, 12);
 }
 
 function resolveActions(ids) {
@@ -193,13 +242,23 @@ function resolveActions(ids) {
  * Used whenever the live model is not requested, not gated, unavailable,
  * or its response fails validation. Always labelled via `source`.
  */
-export function buildDeterministicAdvice({ question, summary }) {
+export function buildDeterministicAdvice({ question, summary, history = [] }) {
   const q = question.toLowerCase();
   const evidence = buildVerifiedEvidence(summary);
   const limitations = [
     ...summary.limitations,
     "This answer was calculated locally from your recorded summaries because the live Meta model was not used.",
   ];
+  // General / casual conversation needs no financial records and invents none.
+  if (/^(hi|hello|hey|good (morning|afternoon|evening)|how are you|thank(s| you)|who are you|what can you do)\b/.test(q)) {
+    return {
+      answer: `Hello! I'm Bucky, your Bucketa assistant for ${summary.profileName}. I can explain recorded sales, expenses, savings, inventory and employees, and — always with your confirmation — help record entries, add products or employees, adjust stock, and queue POS cart items. ${history.length ? "I'm keeping our recent conversation in context. " : ""}Try: "How much did we earn today?"`,
+      explanation: "General conversation; no financial figures were needed or invented.",
+      evidence: [],
+      suggestedActions: resolveActions(["view-transactions"]),
+      limitations,
+    };
+  }
   const hasData = summary.currencies.some((c) => c.transactionCount > 0 || c.posSaleCount > 0);
 
   if (!hasData) {
@@ -286,6 +345,23 @@ export function buildDeterministicAdvice({ question, summary }) {
       limitations,
     };
   }
+  if (/saving|saved|goal|bucket/.test(q) && (summary.savingsGoals ?? []).length > 0) {
+    const goals = summary.savingsGoals;
+    const named = goals.find((g) => q.includes(g.name.toLowerCase()));
+    const scoped = named ? [named] : goals;
+    const parts = scoped.map(
+      (g) => `${g.name} (${g.currency}): saved ${formatMinor(g.savedMinor, g.currency)} of ${formatMinor(g.targetMinor, g.currency)}, with ${formatMinor(g.remainingMinor, g.currency)} remaining`,
+    );
+    return {
+      answer: named
+        ? `Here is your ${named.name} savings goal for ${summary.profileName}: ${parts[0]}. Figures come from records assigned to this goal, in its own currency only.`
+        : `Savings goals for ${summary.profileName} — ${parts.join(" · ")}. Each goal is tracked in its own currency and never combined.`,
+      explanation: "Goal saved/remaining amounts are computed in code from records assigned to each bucket.",
+      evidence,
+      suggestedActions: resolveActions(["review-savings"]),
+      limitations,
+    };
+  }
   if (/saving|goal|bucket|improve|reduce|priorit/.test(q)) {
     return {
       answer: `Here's what I can verify for ${summary.profileName}: ${perCurrency}. Practical next steps: review the largest expense category first, categorise any uncategorised expenses so the analysis is trustworthy, and check savings buckets before moving money. I can't recommend amounts beyond these recorded figures.`,
@@ -331,14 +407,18 @@ export const BUCKY_ADVICE_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-export function buildBuckyAdvicePrompt({ question, summary }) {
+export function buildBuckyAdvicePrompt({ question, summary, history = [] }) {
+  const historyLines = (history ?? []).slice(-6).map((turn) => `${turn.role === "user" ? "User" : "Bucky"}: ${turn.text}`);
   return [
     `You are Bucky, a financial assistant inside Bucketa, answering a question for the profile "${summary.profileName}" (${summary.profileKind}).`,
-    "Use ONLY the aggregated summary below. Never invent transactions, amounts, products, or dates. Never combine currencies.",
+    "Use ONLY the aggregated summary below for financial figures. Never invent transactions, amounts, products, or dates. Never combine currencies.",
+    "For general or casual questions, answer helpfully without inventing financial data. Ask a clarifying question when the request is ambiguous.",
     "Net cash flow is recorded income minus recorded expenses: it is not profit and not a bank balance. POS revenue is separate from transaction income.",
+    "Savings goals (when present in the summary) belong to this profile only; each goal's saved/target/remaining amounts are in that goal's own currency and must never be combined across currencies.",
     "If the summary cannot answer the question, say so plainly and state what records would be needed. Do not give professional financial advice; keep suggestions practical and tied to the figures.",
     "Return only answer, explanation, suggestedActionIds, and limitations. Evidence figures are computed and attached by the server, so do not return an evidence field.",
     `Suggested actions may only use these ids: ${Object.keys(BUCKY_ALLOWED_ACTIONS).join(", ")}.`,
+    ...(historyLines.length ? ["Recent conversation (bounded context only):", ...historyLines] : []),
     `Question: ${question}`,
     `Aggregated summary (integer minor units per currency): ${JSON.stringify(summary)}`,
   ].join("\n");
@@ -371,6 +451,15 @@ function allowedNumbers(summary) {
   }
   add(summary.duplicateGroupCount);
   add(summary.lowStockCount);
+  for (const g of summary.savingsGoals ?? []) {
+    const digits = minorUnitDigits(g.currency);
+    const divisor = 10 ** digits;
+    for (const minor of [g.targetMinor, g.savedMinor, g.remainingMinor]) {
+      add(minor);
+      add(minor / divisor);
+      add(Math.abs(minor / divisor));
+    }
+  }
   return allowed;
 }
 

@@ -57,6 +57,7 @@ export default function ProductsPage() {
   const [barcode, setBarcode] = useState("");
   const [barcodeScanTarget, setBarcodeScanTarget] = useState<"form" | "lookup" | null>(null);
   const [labelProduct, setLabelProduct] = useState<Product | null>(null);
+  const [labelBatch, setLabelBatch] = useState(false);
   const [category, setCategory] = useState("");
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -463,7 +464,7 @@ export default function ProductsPage() {
                     />
                   </div>
                 )}
-                {labelProduct && <BarcodeLabel product={labelProduct} onClose={() => setLabelProduct(null)} />}
+                {labelProduct && <BarcodeLabel product={labelProduct} batchProducts={labelBatch ? products.filter((p) => p.profileId === labelProduct.profileId && (p.barcode ?? "").trim()) : undefined} onClose={() => { setLabelProduct(null); setLabelBatch(false); }} />}
 
                 {showForm && (
                   <form className="card inline-form" onSubmit={onSaveProduct} noValidate>
@@ -709,7 +710,7 @@ export default function ProductsPage() {
                                   Update stock
                                 </button>
                                 {product.barcode ? (
-                                  <button className="btn ghost small" type="button" onClick={() => setLabelProduct(product)}>Print label</button>
+                                  <><button className="btn ghost small" type="button" onClick={() => { setLabelBatch(false); setLabelProduct(product); }}>Print label</button><button className="btn ghost small" type="button" onClick={() => { setLabelBatch(true); setLabelProduct(product); }}>Batch labels</button></>
                                 ) : (
                                   <button
                                     className="btn ghost small"

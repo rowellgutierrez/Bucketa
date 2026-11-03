@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { errors } from "./errors.mjs";
 
 /**
@@ -31,10 +32,18 @@ export function createLiveLimiter(max = MAX_LIVE_REQUESTS_PER_SESSION) {
   };
 }
 
+/** Constant-time token comparison (digest-first, so length leaks nothing). */
+function tokensMatch(expected, provided) {
+  if (typeof expected !== "string" || typeof provided !== "string" || !expected || !provided) return false;
+  const a = createHash("sha256").update(expected, "utf8").digest();
+  const b = createHash("sha256").update(provided, "utf8").digest();
+  return timingSafeEqual(a, b);
+}
+
 export function assertLiveAllowed({ liveMetaEnabled, modelApiKey, liveTestToken, requestToken }) {
   if (!liveMetaEnabled) throw errors.liveDisabled();
   if (!modelApiKey) throw errors.liveDisabled();
-  if (!liveTestToken || !requestToken || requestToken !== liveTestToken) {
+  if (!tokensMatch(liveTestToken, requestToken)) {
     throw errors.liveUnauthorized();
   }
 }

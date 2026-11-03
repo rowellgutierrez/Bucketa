@@ -11,6 +11,7 @@ import {
   findProductByBarcode,
   generateInternalBarcode,
   isInternalBarcode,
+  shouldAcceptPosScan,
   shouldAcceptScan,
 } from "./barcode.ts";
 
@@ -67,6 +68,15 @@ test("camera detections require an explicit reset, regardless of elapsed time or
   assert.equal(shouldAcceptScan(last, "BKT-BBBB3456", 1100), false);
   assert.equal(shouldAcceptScan(null, "BKT-AAAA2345", 0), true);
   assert.equal(shouldAcceptScan(null, "  ", 0), false);
+});
+
+test("POS scan dedupe blocks instant repeats but allows intentional rescans", () => {
+  const last = { code: "BKT-AAAA2345", at: 1000 };
+  assert.equal(shouldAcceptPosScan(last, "BKT-AAAA2345", 2000), false);
+  assert.equal(shouldAcceptPosScan(last, "BKT-AAAA2345", 2600), true);
+  assert.equal(shouldAcceptPosScan(last, "BKT-BBBB3456", 1100), true);
+  assert.equal(shouldAcceptPosScan(null, "BKT-AAAA2345", 0), true);
+  assert.equal(shouldAcceptPosScan(null, "  ", 0), false);
 });
 
 test("scan-to-cart adds the saved price and never exceeds stock", () => {

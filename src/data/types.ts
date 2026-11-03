@@ -75,6 +75,10 @@ export interface Product {
   color?: string | null;
   /** Optional grouping label, e.g. "Drinks". */
   category: string | null;
+  /** Optional Creative Studio photo (data URL) approved by the merchant.
+   * Absent on older records, so no migration is needed. The original
+   * uploaded photo is never stored by Bucketa. */
+  photoDataUrl?: string | null;
   priceMinor: MinorUnits;
   /** Optional purchase cost; null means cost is not tracked. */
   costMinor: MinorUnits | null;

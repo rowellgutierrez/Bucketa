@@ -4,7 +4,7 @@ import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../d
 import HomeBucky from "../components/HomeBucky";
 import GettingStarted, { type StartStep } from "../components/GettingStarted";
 import { DEFAULT_LOCALE } from "../config";
-import { formatMoney } from "../lib/currency";
+import { formatMoney, toMajorUnits } from "../lib/currency";
 import {
   expenseByCategory,
   filterByDateRange,
@@ -17,10 +17,60 @@ import Icon from "../components/ui/Icon";
 import { buildActivity, selectHistory, historyHref } from "../lib/historyScope";
 import { onRecordsChanged } from "../lib/dataChange";
 import TransactionRow from "../components/TransactionRow";
+import { loadOwnerProfile, onOwnerProfileChanged, type OwnerProfile } from "../lib/ownerProfile";
 
 type Status = "loading" | "ready" | "error";
 type View = "personal" | "business" | "all";
 type RangePreset = "all" | "month" | "lastMonth" | "days30" | "custom";
+
+/** Rendering only: inputs are the existing scoped monthly/category totals. */
+function MonthlyChart({months,currency}:{months:ReturnType<typeof monthlyIncomeExpense>;currency:string}) {
+  const maximum=Math.max(1,...months.flatMap(m=>[m.income,m.expense]));
+  const magnitude=Math.max(1,10**Math.floor(Math.log10(maximum/4)));
+  const step=Math.ceil(([1,2,2.5,5,10].find(n=>n*magnitude>=maximum/4)??10)*magnitude);
+  const tickCount=Math.max(1,Math.ceil(maximum*1.1/step));
+  const ceiling=step*tickCount;
+  const labelWidth=Math.max(...months.flatMap(m=>[formatMoney(m.income,currency).length,formatMoney(m.expense,currency).length]))*7;
+  const left=Math.max(108,formatMoney(ceiling,currency).length*7+16),right=24;
+  const width=Math.max(520,months.length*Math.max(180,labelWidth*2+36)+left+right), height=200;
+  const top=28,bottom=38,plotHeight=height-top-bottom;
+  const groupWidth=(width-left-right)/months.length;
+  const barWidth=Math.min(64,groupWidth*.3),gap=Math.max(18,labelWidth-barWidth+12);
+  return <><div className="finance-chart-scroll" tabIndex={0} role="region" aria-label="Monthly income and expenses chart; scroll for more months">
+    <svg className="finance-bar-chart" viewBox={`0 0 ${width} ${height}`} style={{minWidth:months.length>2||labelWidth>90?width:460}} role="img" aria-labelledby="monthly-chart-title monthly-chart-desc">
+      <title id="monthly-chart-title">Monthly income and expenses in {currency}</title>
+      <desc id="monthly-chart-desc">Two bars per month using the selected profile and dates. Exact amounts are also listed below.</desc>
+      {Array.from({length:tickCount+1},(_,tick)=>{const y=height-bottom-tick*plotHeight/tickCount;return <g key={tick}><line className="finance-gridline" x1={left} x2={width-right} y1={y} y2={y}/><text className="finance-axis-label" x={left-12} y={y+4} textAnchor="end">{formatMoney(step*tick,currency)}</text></g>;})}
+      <line className="finance-axis" x1={left} x2={left} y1={top} y2={height-bottom}/>
+      <line className="finance-axis" x1={left} x2={width-right} y1={height-bottom} y2={height-bottom}/>
+      {months.map((month,index)=>{const center=left+groupWidth*(index+.5);return <g key={month.month}>
+        {([{kind:'income',value:month.income,x:center-gap/2-barWidth},{kind:'expense',value:month.expense,x:center+gap/2}]).map(bar=>{const h=bar.value/ceiling*plotHeight,y=height-bottom-h;return <g key={bar.kind}><rect className={`finance-bar finance-bar--${bar.kind}`} x={bar.x} y={y} width={barWidth} height={h} rx={5}><title>{monthLabel(month.month)} · {bar.kind}: {formatMoney(bar.value,currency)}</title></rect><text className="finance-bar-value" x={bar.x+barWidth/2} y={y-9} textAnchor="middle">{formatMoney(bar.value,currency)}</text></g>;})}
+        <text className="finance-month-label" x={center} y={height-16} textAnchor="middle">{monthLabel(month.month)}</text>
+      </g>;})}
+    </svg>
+  </div><div className="finance-mobile-months">{months.map(month=><section className="finance-mobile-month" key={month.month} aria-label={monthLabel(month.month)}>
+    <h3>{monthLabel(month.month)}</h3>
+    <svg viewBox="0 0 280 180" role="img" aria-label={`Income ${formatMoney(month.income,currency)}, expenses ${formatMoney(month.expense,currency)}`}>
+      {[0,.5,1].map(tick=><g key={tick}><line className="finance-gridline" x1={65} x2={270} y1={145-tick*125} y2={145-tick*125}/><text className="finance-axis-label" textAnchor="end" x={58} y={149-tick*125}>{new Intl.NumberFormat(DEFAULT_LOCALE,{notation:'compact',maximumFractionDigits:1}).format(toMajorUnits(Math.round(ceiling*tick),currency))}</text></g>)}
+      <line className="finance-axis" x1={65} x2={270} y1={145} y2={145}/>
+      <rect className="finance-bar--income" x={95} y={145-month.income/ceiling*125} width={55} height={month.income/ceiling*125} rx={5}/>
+      <rect className="finance-bar--expense" x={185} y={145-month.expense/ceiling*125} width={55} height={month.expense/ceiling*125} rx={5}/>
+      <text className="finance-month-label" x={122} y={170} textAnchor="middle">Income</text><text className="finance-month-label" x={212} y={170} textAnchor="middle">Expenses</text>
+    </svg><dl><div><dt>Income</dt><dd>{formatMoney(month.income,currency)}</dd></div><div><dt>Expenses</dt><dd>{formatMoney(month.expense,currency)}</dd></div></dl>
+  </section>)}</div></>;
+}
+
+function ExpenseDonut({categories,currency}:{categories:ReturnType<typeof expenseByCategory>;currency:string}) {
+  const total=categories.reduce((sum,category)=>sum+category.total,0);
+  if(total<=0)return <p className="muted">No recorded expenses in this currency for the selected dates.</p>;
+  let offset=0;
+  return <div className="finance-donut-layout"><div className="finance-donut">
+    <svg viewBox="0 0 240 240" role="img" aria-labelledby="expense-donut-title"><title id="expense-donut-title">Expense breakdown in {currency}; category values and percentages follow</title>
+      <circle cx={120} cy={120} r={94} className="finance-donut-track" fill="none" strokeWidth={35}/>
+      {categories.map((category,index)=>{if(category.total<=0)return null;const percent=category.total/total*100,start=offset;offset+=percent;return <circle key={category.category} cx={120} cy={120} r={94} fill="none" stroke={`var(--bk-chart-${index%8})`} strokeWidth={35} pathLength={100} strokeDasharray={`${percent} ${100-percent}`} strokeDashoffset={-start} transform="rotate(-90 120 120)"><title>{category.category}: {formatMoney(category.total,currency)} ({percent.toFixed(1)}%)</title></circle>;})}
+    </svg><div className="finance-donut-total"><strong>{formatMoney(total,currency)}</strong><span>Total recorded<br/>expenses</span></div>
+    </div><ul className="finance-category-legend">{categories.map((category,index)=><li key={category.category}><span className="finance-category-swatch" style={{background:`var(--bk-chart-${index%8})`}} aria-hidden="true"/><span>{category.category}</span><strong>{formatMoney(category.total,currency)}</strong><span>{(category.total/total*100).toFixed(1)}%</span></li>)}</ul></div>;
+}
 
 
 function errorMessage(error: unknown): string {
@@ -64,6 +114,8 @@ function rangeFor(preset: RangePreset, customFrom: string, customTo: string): { 
   return { from: "", to: "" };
 }
 
+function metricValue(value:string|number){const text=String(value);return <span className="home-metric-value" tabIndex={0} title={text} aria-label={text} style={{fontSize:'clamp(14px, calc(100cqi / '+Math.max(text.length,7)+' * 1.5), 26px)'}}>{text}</span>;}
+
 export default function DashboardPage() {
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState("");
@@ -79,6 +131,8 @@ export default function DashboardPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [chartCurrency, setChartCurrency] = useState("");
+  const [owner, setOwner] = useState<OwnerProfile>(() => loadOwnerProfile());
+  useEffect(() => onOwnerProfileChanged(setOwner), []);
   async function load() {
     setStatus("loading");
     setLoadError("");
@@ -174,11 +228,6 @@ export default function DashboardPage() {
     () => (activeCurrency ? expenseByCategory(scoped, activeCurrency) : []),
     [scoped, activeCurrency],
   );
-  const slices = useMemo(() => {
-    const total = categories.reduce((sum, item) => sum + item.total, 0);
-    return categories.map((item) => ({ ...item, pct: total > 0 ? item.total / total * 100 : 0 }));
-  }, [categories]);
-  const maxMonthly = Math.max(1, ...monthly.flatMap((m) => [m.income, m.expense]));
   const activity = useMemo(() => buildActivity(transactions, sales, profiles), [transactions, sales, profiles]);
   const scopedActivity = useMemo(() => selectHistory(activity, profiles, {scope:view,profileId:businessId,from:range.from,to:range.to}).records, [activity,profiles,view,businessId,range.from,range.to]);
   const recent = useMemo(
@@ -245,7 +294,7 @@ export default function DashboardPage() {
   return (
     <section className="page finance-page premium-dashboard home-page">
       <PageHeader className="home-header"
-        title={personalProfiles[0] ? `Hello, ${personalProfiles[0].name}.` : "Welcome to Bucketa"}
+        title={owner.showGreeting && owner.firstName ? `Hello, ${owner.firstName}!` : personalProfiles[0] ? `Hello, ${personalProfiles[0].name.replace(/\p{L}/u, letter => letter.toLocaleUpperCase())}!` : "Welcome to Bucketa"}
         description="Smart Buckets — Everything in one bucket."
       />
       {status === "loading" && <Card className="loading-state" role="status">Loading Home…</Card>}
@@ -262,31 +311,28 @@ export default function DashboardPage() {
                     aria-pressed={view === v}
                     onClick={() => setView(v)}
                   >
+                    <Icon name={v === "all" ? "buckets" : v === "personal" ? "personal" : "products"}/>
                     {v === "all" ? "All" : v === "personal" ? "Personal" : "Business"}
                   </button>
                 ))}
               </span>
               {view === "business" &&
                 (businessProfiles.length > 0 ? (
-                  <>
-                    <label htmlFor="dash-business">Business</label>
-                    <select
-                      id="dash-business"
-                      className="input selector-select"
-                      value={businessId}
-                      onChange={(e) => setBusinessId(e.target.value)}
-                    >
-                      {businessProfiles.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  </>
+                  <select
+                    id="dash-business"
+                    aria-label="Business"
+                    className="input selector-select"
+                    value={businessId}
+                    onChange={(e) => setBusinessId(e.target.value)}
+                  >
+                    {businessProfiles.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
                 ) : (
                   <span className="muted">No businesses yet</span>
                 ))}
-            </div>
-            <div className="selector-main">
-              <label htmlFor="dash-range">Dates</label>
+              <label className="sr-only" htmlFor="dash-range">Dates</label>
               <select
                 id="dash-range"
                 className="input selector-select"
@@ -321,10 +367,10 @@ export default function DashboardPage() {
           </div>
       {hasAnyTransactions && scoped.length > 0 && <>
         {summaries.map((s) => <section key={s.currency} className="dashboard-metrics" aria-label={`Summary in ${s.currency}`}>
-          <MetricCard icon="income" label="Income" value={formatMoney(s.income, s.currency)} detail="Selected dates" />
-          <MetricCard icon="expenses" label="Expenses" value={formatMoney(s.expense, s.currency)} detail="Selected dates" />
-          <MetricCard icon="personal" label="Net cash flow" value={formatMoney(s.net, s.currency)} detail="Income − expenses · not profit" />
-          <MetricCard icon="transactions" label="Records" value={scoped.filter((t) => t.currency === s.currency).length} detail={s.currency} />
+          <MetricCard icon="income" label="Income" value={metricValue(formatMoney(s.income, s.currency))} detail={s.currency} />
+          <MetricCard icon="expenses" label="Expenses" value={metricValue(formatMoney(s.expense, s.currency))} detail={s.currency} />
+          <MetricCard icon="personal" label="Net cash flow" value={metricValue(formatMoney(s.net, s.currency))} detail="Income − expenses · not profit" />
+          <MetricCard icon="transactions" label="Records" value={metricValue(scoped.filter((t) => t.currency === s.currency).length)} detail={s.currency} />
         </section>)}
         {summaries.length > 0 && <p className="muted dashboard-accounting-note">Net cash flow reflects recorded income minus expenses. It is not a bank balance or profit. Currencies are never combined. POS sales appear in activity, separate from these transaction summaries.</p>}
       </>}
@@ -366,14 +412,12 @@ export default function DashboardPage() {
               <div className="panel-head"><h2 id="monthly-heading">Income vs Expenses</h2><span className="count-badge">{activeCurrency}</span></div>
               <p className="chart-legend muted"><span className="legend-swatch swatch-in" /> Income <span className="legend-swatch swatch-out" /> Expenses</p>
               {monthly.length === 0 ? <p className="muted">No income or expenses for the selected dates.</p> : <>
-                <div className="chart-scroll" tabIndex={0} role="region" aria-label="Scrollable monthly chart"><div className="bar-chart" role="img" aria-label={`Monthly income and expenses in ${activeCurrency}; exact values below`}>
-                  {monthly.map((m) => <div key={m.month} className="bar-group"><div className="bars"><div className="bar bar-in" style={{ height: `${Math.max(0, (m.income / maxMonthly) * 100)}%` }} title={`Income ${formatMoney(m.income, activeCurrency)}`} /><div className="bar bar-out" style={{ height: `${Math.max(0, (m.expense / maxMonthly) * 100)}%` }} title={`Expenses ${formatMoney(m.expense, activeCurrency)}`} /></div><span className="bar-label">{monthLabel(m.month)}</span></div>)}
-                </div></div>
+                <MonthlyChart months={monthly} currency={activeCurrency}/>
                 <details className="chart-data"><summary>View exact monthly values</summary><ul className="chart-values">{monthly.map((m) => <li key={m.month}>{monthLabel(m.month)}: {formatMoney(m.income, activeCurrency)} income · {formatMoney(m.expense, activeCurrency)} expenses</li>)}</ul></details>
               </>}
             </Card>
             <Card className="dashboard-breakdown" aria-labelledby="category-heading"><div className="panel-head"><h2 id="category-heading">Expense Breakdown</h2><span className="count-badge">{activeCurrency}</span></div>
-              {categories.length === 0 ? <p className="muted">No expenses in this currency for the selected dates.</p> : <ul className="expense-breakdown">{slices.map((s, i) => <li key={s.category}><div><strong>{s.category}</strong><span>{s.pct.toFixed(1)}%</span></div><div className="expense-track" aria-hidden="true"><span style={{ width: `${s.pct}%`, background: i % 2 ? "var(--bk-chart-secondary)" : "var(--bk-blue-600)" }} /></div><p>{formatMoney(s.total, activeCurrency)}</p></li>)}</ul>}
+              <ExpenseDonut categories={categories} currency={activeCurrency}/>
             </Card>
           </>}
 

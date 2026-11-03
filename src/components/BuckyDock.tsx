@@ -1,14 +1,16 @@
-import {getBuckyPresentation,subscribeBuckyPresentation,setBuckyOpen,recordBuckyEvent} from "../lib/buckyPresentation";
+import {getBuckyPresentation,subscribeBuckyPresentation,setBuckyOpen,setBuckyInline,recordBuckyEvent} from "../lib/buckyPresentation";
 import BuckyStatusMascot from "./BuckyStatusMascot";
 import {formatMoney} from "../lib/currency";
 import { BUCKY_OPEN_EVENT, type BuckyConversationRequest } from "../lib/buckyConversation";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { bucketsRepo, employeesRepo, productsRepo, profilesRepo, salesRepo, transactionsRepo } from "../data/db";
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types";
 import BuckyPanel from "./BuckyPanel";
 import ScannerPage from "../pages/ScannerPage";
 import { onRecordsChanged } from "../lib/dataChange";
 import Icon from "./ui/Icon";
+
+import {createPortal} from 'react-dom';
 
 type Status = "idle" | "loading" | "ready" | "error";
 
@@ -29,6 +31,9 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
   const [loaded, setLoaded] = useState(false);
   const [requestReady, setRequestReady] = useState(false);
   const [open, setOpen] = useState(false);
+  const [inline, setInline] = useState(false);
+  const [panelContainer] = useState(() => {const el=document.createElement('div');el.className='bucky-shared-panel bucky-conversation-host';return el;});
+  const dockHost = useRef<HTMLDivElement>(null);
   const [navigationKey, setNavigationKey] = useState(() => window.location.hash);
   const [status, setStatus] = useState<Status>("idle");
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -120,6 +125,15 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
 
   useEffect(() => {setBuckyOpen(open);},[open]);
 
+  useEffect(() => {setBuckyInline(inline);return () => setBuckyInline(false);},[inline]);
+  useLayoutEffect(() => {
+    const target=inline ? document.getElementById('home-bucky-voice-host') : dockHost.current;
+    if(target && panelContainer.parentElement!==target)target.appendChild(panelContainer);
+  },[inline,loaded,navigationKey,panelContainer]);
+  useEffect(() => {
+    if(inline && !hideLauncher){setInline(false);if(hasPendingAction)setOpen(true);}
+  },[navigationKey,inline,hideLauncher,hasPendingAction]);
+
   // Confirmed saves anywhere (including the embedded scanner) refresh the
   // panel's data silently so answers stay current without a reopen.
   useEffect(() => onRecordsChanged(detail => {
@@ -149,15 +163,17 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
   const hasUnsavedWork = hasPendingAction || (scanMode && scannerDirty);
   useEffect(() => {
     const receive = (event: Event) => {
-      setOpen(true);
-      if (hasPendingAction || scannerDirty) { setShowPendingHint(true); return; }
+      if (hasPendingAction || scannerDirty) { setShowPendingHint(true); if(!inline)setOpen(true); return; }
+      const detail=(event as CustomEvent<BuckyConversationRequest>).detail;
+      const homeVoice=detail?.mode==='voice' && hideLauncher;
+      setInline(homeVoice);setOpen(!homeVoice);
       setRequestReady(false);
       void load(loaded);
       setScanMode(false); setRequest((event as CustomEvent<BuckyConversationRequest>).detail);
     };
     window.addEventListener(BUCKY_OPEN_EVENT, receive);
     return () => window.removeEventListener(BUCKY_OPEN_EVENT, receive);
-  }, [hasPendingAction, scannerDirty]);
+  }, [hasPendingAction, scannerDirty, inline, hideLauncher, load, loaded]);
 
   /** Returns true when closing (and therefore navigation) is allowed. */
   function requestClose(): boolean {
@@ -165,7 +181,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
       setShowPendingHint(true);
       return false;
     }
-    setOpen(false);
+    setOpen(false);setInline(false);
     return true;
   }
 
@@ -175,7 +191,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
       setShowPendingHint(true);
       return;
     }
-    setScanMode(true);
+    setInline(false);setOpen(true);setScanMode(true);
   }
 
   /** Back to the conversation; an unsaved scan review blocks leaving. */
@@ -242,13 +258,17 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
         {scanMode && <ScannerPage embedded onDirtyChange={handleScannerDirty} onExit={() => { setScanMode(false); setOpen(false); }} />}
         {!loaded && status !== "error" && <p role="status">Loading your saved records…</p>}
         {status === "error" && <div><p className="alert-error" role="alert">Bucky couldn't load your records. Nothing was changed.</p><button className="btn" type="button" onClick={() => void load()}>Retry</button></div>}
-        {loaded && <div className="bucky-conversation-host" hidden={scanMode || status === "error"}>
-          <BuckyPanel profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
-            navigationKey={navigationKey} conversationRequest={requestReady ? request : null} active={open && !scanMode && status !== "error"} compact
-            onRecordsChanged={() => void load(true)} onPendingActionChange={setHasPendingAction}
-            onNavigateAway={requestClose} onScanRequest={requestScan} />
-        </div>}
+        <div ref={dockHost} className="bucky-conversation-host" hidden={scanMode || status === "error"}/>
       </dialog>
+      {createPortal(<>
+        {inline && showPendingHint && hasUnsavedWork && <p role="alert" className="alert-error">Confirm or cancel the pending preview before closing.</p>}
+        {inline && !loaded && status!=='error' && <p role="status">Loading your saved records…</p>}
+        {inline && status==='error' && <div><p role="alert" className="alert-error">Bucky couldn't load your records. Nothing was changed.</p><button type="button" className="btn" onClick={()=>void load()}>Retry</button></div>}
+        {loaded && <BuckyPanel profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
+          navigationKey={navigationKey} conversationRequest={requestReady ? request : null} active={(open || inline) && !scanMode && status !== "error"} compact inlineVoice={inline}
+          onRecordsChanged={() => void load(true)} onPendingActionChange={setHasPendingAction}
+          onNavigateAway={requestClose} onScanRequest={requestScan}/>}
+      </>,panelContainer)}
     </>
   );
 }

@@ -18,6 +18,12 @@ assets/bucketa-approved-logo.png
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
+*.keystore
+credentials*.json
+service-account*.json
+.npmrc
 
 # OS and editor files
 .DS_Store

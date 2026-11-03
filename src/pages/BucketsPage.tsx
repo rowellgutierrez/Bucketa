@@ -1,4 +1,6 @@
 import PageHeader from "../components/ui/PageHeader";
+import Icon from "../components/ui/Icon";
+import BrandedFolder from "../components/BrandedFolder";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   bucketsRepo,
@@ -507,6 +509,9 @@ export default function BucketsPage() {
                 >
                   Edit business
                 </button>
+                <details className="savings-actions business-actions" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector('summary')?.focus();}}}>
+                <summary aria-label="More business actions"><Icon name="more"/></summary>
+                <div className="savings-actions-popover" onClick={event=>{if((event.target as HTMLElement).closest('button'))event.currentTarget.closest('details')?.removeAttribute('open');}}>
                 <button
                   className="btn ghost small"
                   type="button"
@@ -530,6 +535,7 @@ export default function BucketsPage() {
                 >
                   Delete…
                 </button>
+                </div></details>
               </div>
             </div>
           )}
@@ -919,17 +925,16 @@ export default function BucketsPage() {
               <p className="muted bucket-guide-link">Buckets organize records, not bank accounts. <a href="#/settings">Help &amp; Guide</a></p>
 
               {buckets.length === 0 ? (
-                <div className="empty-state dash-empty">
-                  <p>No buckets yet for {activeProfile.name}.</p>
+                <div className="empty-state dash-empty business-buckets-empty">
+                  <div><h3>No buckets yet for {activeProfile.name}</h3>
                   <p className="muted">
                     Buckets organise records you assign to them — they do not
                     hold money by themselves, so no amount is shown until
                     records are assigned.
                   </p>
-                  <p className="muted">
-                    Use the Add Bucket button above to create the first one, then record business transactions and assign them to it.
-                    
-                  </p>
+                  <button className="btn" type="button" onClick={()=>{setEditingBucketId('');setShowBucketForm(true);requestAnimationFrame(()=>document.getElementById('bucket-name')?.focus());}}>+ Add Your First Bucket</button>
+                  </div>
+                  <BrandedFolder/>
                 </div>
               ) : (
                 <ul className="bucket-list clean-list">

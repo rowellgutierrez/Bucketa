@@ -21,6 +21,7 @@ const summary: BuckyModelSummary = {
   insightKinds: ["cash-flow"],
   duplicateGroupCount: 0,
   lowStockCount: 0,
+  savingsGoals: [{ name: "iPhone", currency: "PHP", targetMinor: 5000000, savedMinor: 1250000, remainingMinor: 3750000 }],
   limitations: [],
 };
 
@@ -60,6 +61,10 @@ test("fallback advice posts only the aggregated summary and returns labelled sou
       // No raw records or descriptions are ever sent.
       assert.ok(!("transactions" in sent));
       assert.ok(!seenBody.includes("description"));
+      // The only goal context is the bounded aggregated goal figures.
+      assert.deepEqual(sent.summary.savingsGoals, [
+        { name: "iPhone", currency: "PHP", targetMinor: 5000000, savedMinor: 1250000, remainingMinor: 3750000 },
+      ]);
     },
   );
 });

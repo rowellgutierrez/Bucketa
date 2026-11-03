@@ -8,6 +8,7 @@ import {
   buildBuckyTransaction,
   interpretBuckyAction,
   interpretBuckyProductCommand,
+  isFinancialAnalysisQuestion,
   type BuckyActionContext,
   type BuckyProductContext,
   type ModelActionProposal,
@@ -49,6 +50,33 @@ function proposal(text: string, context: BuckyActionContext): ProposedBuckyActio
   assert.equal(result.status, "proposal", JSON.stringify(result));
   return result.status === "proposal" ? result.action : (() => { throw new Error("unreachable"); })();
 }
+
+test("read-only financial analysis questions are Q&A, never transaction commands", () => {
+  for (const q of [
+    "Summarize my recorded income, expenses, and net cash flow in PHP",
+    "Analyze my current PHP financial summary",
+  ]) {
+    assert.equal(isFinancialAnalysisQuestion(q), true, q);
+    // Regression: these used to hit buildRecord and ask "How much is the
+    // income?" — they must fall through to Bucky Q&A (deterministic or
+    // live Meta AI when enabled), with no clarification and no write.
+    assert.equal(interpretBuckyAction(q, ctx()).status, "not-action", q);
+    assert.equal(interpretBuckyProductCommand(q, productCtx()).status, "not-action", q);
+  }
+});
+
+test("legitimate transaction commands still produce confirmable proposals", () => {
+  assert.equal(isFinancialAnalysisQuestion("Record ₱5,000 income from freelance work"), false);
+  const income = proposal("Record ₱5,000 income from freelance work", ctx());
+  assert.equal(income.kind, "income");
+  // Plural "expenses" in an explicit command is still an expense command.
+  const expenses = proposal("Record ₱500 expenses for groceries", ctx());
+  assert.equal(expenses.kind, "expense");
+  const spent = proposal("Spent ₱500 on groceries today", ctx());
+  assert.equal(spent.kind, "expense");
+  const savings = proposal("Add ₱1,000 to my iPhone savings goal", ctx());
+  assert.equal(savings.kind, "savings-contribution");
+});
 
 test("records income with amount, description, and profile currency", () => {
   const action = proposal("Record ₱5,000 income from freelance work", ctx());
@@ -447,6 +475,16 @@ test("add product: parses the documented example with safe defaults", () => {
   const built = buildBuckyProduct(result.product, "2026-11-02T00:00:00.000Z");
   assert.equal(built.id, "bucky:product-test-1");
   assert.equal(validateProduct(built), built);
+});
+
+test("add product: documented Hakdog example parses price and opening stock", () => {
+  const result = interpretBuckyProductCommand("Add a product named Hakdog, price ₱85, stock 20.", productCtx());
+  assert.equal(result.status, "proposal");
+  if (result.status === "proposal") {
+    assert.equal(result.product.name, "Hakdog");
+    assert.equal(result.product.priceMinor, 8500);
+    assert.equal(result.product.stock, 20);
+  }
 });
 
 test("add product: uses the selected business's currency, never an inferred one", () => {

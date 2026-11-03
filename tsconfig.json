@@ -14,5 +14,5 @@
     "useDefineForClassFields": true
   },
   "include": ["src", "vite.config.ts"],
-  "exclude": ["src/data/validation.test.ts", "src/lib/scannerReview.test.ts", "src/lib/scannerApi.test.ts", "src/lib/buckyAgent.test.ts", "src/lib/buckyApi.test.ts", "src/lib/transactionCorrection.test.ts", "src/lib/buckySavingsEvents.test.ts", "src/lib/buckyVoice.test.ts", "src/lib/buckyActions.test.ts", "src/lib/employees.test.ts"]
+  "exclude": ["src/data/validation.test.ts", "src/lib/scannerReview.test.ts", "src/lib/scannerApi.test.ts", "src/lib/buckyAgent.test.ts", "src/lib/buckyApi.test.ts", "src/lib/transactionCorrection.test.ts", "src/lib/buckySavingsEvents.test.ts", "src/lib/buckyVoice.test.ts", "src/lib/buckyActions.test.ts", "src/lib/employees.test.ts", "src/lib/ownerProfile.test.ts", "src/lib/buckyAppActions.test.ts", "src/lib/buckyLiveSettings.test.ts", "src/lib/creativeStudio.test.ts", "src/lib/barcode.test.ts"]
 }

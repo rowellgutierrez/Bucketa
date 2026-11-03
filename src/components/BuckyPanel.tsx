@@ -3,8 +3,8 @@ import {getBuckyDraft,setBuckyDraft,subscribeBuckyDraft} from "../lib/buckyConve
 import type { BuckyConversationRequest } from "../lib/buckyConversation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types.ts";
-import { createTransactionConfirmed, productsRepo } from "../data/db.ts";
-import { findSkuConflict, newId, nowIso, validateProduct, validateTransaction } from "../data/validation.ts";
+import { bucketsRepo, createTransactionConfirmed, employeesRepo, productsRepo } from "../data/db.ts";
+import { findSkuConflict, newId, nowIso, validateBucket, validateEmployee, validateProduct, validateTransaction } from "../data/validation.ts";
 import { formatMoney } from "../lib/currency.ts";
 import { notifyRecordsChanged } from "../lib/dataChange.ts";
 import { bucketGoalProgress } from "../lib/finance.ts";
@@ -15,23 +15,37 @@ import {
   buildBuckyTransaction,
   interpretBuckyAction,
   interpretBuckyProductCommand,
+  isFinancialAnalysisQuestion,
   type ProposedBuckyAction,
   type ProposedBuckyProduct,
 } from "../lib/buckyActions.ts";
 import {
   analyzeBuckyFinances,
   answerBuckyQuestion,
+  buildBuckyModelSummary,
   type BuckyAnswer,
   type BuckyProposal,
 } from "../lib/buckyAgent.ts";
 import {
   BuckyApiError,
+  requestBuckyAdvice,
   requestBuckyInterpret,
 } from "../lib/buckyApi.ts";
+import {
+  appActionTitle,
+  buildBucketRecord,
+  buildEmployeeRecord,
+  interpretAppAction,
+  resolveNamedProfile,
+  queuePosCartHandoff,
+  POS_CART_HANDOFF_KEY,
+  type AppActionProposal,
+} from "../lib/buckyAppActions.ts";
 import {
   appendFinalTranscript,
   canRestartRecognition,
   detectUnsupportedAction,
+  isEchoOfSpeech,
   getSpeechRecognitionCtor,
   isSpeechRecognitionSupported,
   isSpeechSynthesisSupported,
@@ -41,6 +55,8 @@ import {
   shouldAutoProcessTranscript,
   SILENCE_TIMEOUT_MS,
   hasSilenceElapsed,
+  queueAfterSpeech,
+  createContinuousVoiceSession,
   speechRecognitionErrorMessage,
   transcriptsFromEvent,
   UNSUPPORTED_ACTION_ANSWER,
@@ -48,6 +64,14 @@ import {
   type BuckyVoicePhase,
   type SpeechRecognitionLike,
 } from "../lib/buckyVoice.ts";
+import {
+  buckyAdviceMode,
+  buckyLiveUnavailableNote,
+  createAdviceSubmissionGuard,
+  describeAdviceSource,
+  getBuckyLiveSettings,
+  subscribeBuckyLiveSettings,
+} from "../lib/buckyLiveSettings.ts";
 import {
   loadVoiceSettings,
   onVoiceSettingsChanged,
@@ -62,6 +86,7 @@ interface Props {
   conversationRequest?: BuckyConversationRequest | null;
   active?: boolean;
   compact?: boolean;
+  inlineVoice?: boolean;
   profiles: Profile[];
   buckets: Bucket[];
   transactions: Transaction[];
@@ -123,7 +148,7 @@ function goToRoute(route: string) {
  * saved only after explicit user confirmation through the app's
  * commit-confirmed data function.
  */
-export default function BuckyPanel({ profiles, buckets, transactions, products, sales, employees = [], preferredProfileId, onRecordsChanged, onPendingActionChange, onNavigateAway, onScanRequest, conversationRequest, active = true, compact = false, navigationKey }: Props) {
+export default function BuckyPanel({ profiles, buckets, transactions, products, sales, employees = [], preferredProfileId, onRecordsChanged, onPendingActionChange, onNavigateAway, onScanRequest, conversationRequest, active = true, compact = false, inlineVoice = false, navigationKey }: Props) {
   const presentation = useSyncExternalStore(subscribeBuckyPresentation,getBuckyPresentation,getBuckyPresentation);
   const [interactionPhase,setInteractionPhase] = useState<BuckyPhase>("idle");
   const [speechPending,setSpeechPending] = useState(false);
@@ -131,13 +156,17 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const question = useSyncExternalStore(subscribeBuckyDraft,getBuckyDraft,getBuckyDraft);
   const setQuestion = setBuckyDraft;
-  const [lastQuestion, setLastQuestion] = useState("");
+  const [, setLastQuestion] = useState("");
   const [answer, setAnswer] = useState<BuckyAnswer | null>(null);
   // Single conversation thread: user + Bucky messages in order. Action
   // previews stay as live cards below the thread (Confirm/Cancel intact).
   const [thread, setThread] = useState<{ id: number; role: "user" | "bucky"; text: string; profileId?: string; profileName?: string; facts: { label: string; value: string }[]; proposalIds: string[] }[]>([]);
   const msgIdRef = useRef(0);
+  const [voiceHistoryExpanded,setVoiceHistoryExpanded]=useState(false);
+  const [voiceSessionStart,setVoiceSessionStart]=useState(0);
+  const voiceMessages=inlineVoice?thread.filter(msg=>msg.id>voiceSessionStart):thread;
   const conversationScroll = useRef<HTMLDivElement>(null);
+  const followLatest=useRef(true);
   function pushMsg(role: "user" | "bucky", text: string, facts: { label: string; value: string }[] = [], proposalIds: string[] = []) {
     const id = ++msgIdRef.current;
     setThread((prev) => [...prev.slice(-39), { id, role, text, facts, proposalIds, profileId: profile?.id, profileName: profile?.name }]);
@@ -151,8 +180,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       pushMsg("bucky", answer.answer, answer.facts, answer.proposalIds);
     }
   }, [answer]);
-  // Runtime only: never persisted, logged, or pre-filled.
-  const [liveToken, setLiveToken] = useState("");
+  // Live Meta AI settings are shared, memory-only state managed in
+  // Settings → Bucky & Voice (buckyLiveSettings). Never persisted here.
+  const liveSettings = useSyncExternalStore(subscribeBuckyLiveSettings, getBuckyLiveSettings, getBuckyLiveSettings);
+  const liveToken = liveSettings.token;
+  const adviceGuardRef = useRef(createAdviceSubmissionGuard());
   // Voice (Phase 1): browser speech only. Never auto-starts; speech only
   // follows a voice question or an explicit Listen tap.
   const [voicePhase, setVoicePhase] = useState<BuckyVoicePhase>("idle");
@@ -198,6 +230,8 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   // animation prop clears and Bucky returns to Idle.
 
   const utteranceIdRef = useRef(0);
+  const continuousVoice=useRef(createContinuousVoiceSession((callback,delay)=>window.setTimeout(callback,delay),id=>window.clearTimeout(id))).current;
+  const canResumeVoiceRef=useRef<()=>boolean>(()=>false);
   const voiceResponsesOnRef = useRef(true);
   voiceResponsesOnRef.current = voiceResponsesOn;
   // Bookkeeping actions: one pending preview at a time. A proposal is
@@ -211,6 +245,16 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const [pendingProduct, setPendingProduct] = useState<ProposedBuckyProduct | null>(null);
   const [productBusy, setProductBusy] = useState(false);
   const [productError, setProductError] = useState("");
+  // App-wide actions (employee/stock/bucket/POS cart): same rule — preview,
+  // explicit confirmation, then execution via validated repositories.
+  const [pendingAppAction, setPendingAppAction] = useState<AppActionProposal | null>(null);
+  const [appBusy, setAppBusy] = useState(false);
+  const [appError, setAppError] = useState("");
+  const executedAppIdsRef = useRef<Set<string>>(new Set());
+  const [serverBusy, setServerBusy] = useState(false);
+  const [serverNote, setServerNote] = useState("");
+  // Last text Bucky spoke, used to reject its own voice as a new turn.
+  const lastSpokenRef = useRef("");
   const [locallyCreatedProducts, setLocallyCreatedProducts] = useState<Product[]>([]);
   const executedProductIdsRef = useRef<Set<string>>(new Set());
   const [savedResult, setSavedResult] = useState<{ message: string; facts: { label: string; value: string }[] } | null>(null);
@@ -222,6 +266,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
   }, [savedResult]);
   const [locallySaved, setLocallySaved] = useState<Transaction[]>([]);
+  const hasPendingPreview = Boolean(pendingAction || pendingProduct || pendingAppAction);
   const pendingViaVoiceRef = useRef(false);
   const executedActionIdsRef = useRef<Set<string>>(new Set());
   const recognitionSupported = useMemo(
@@ -248,15 +293,15 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   useEffect(() => {
     if(!active)return;
-    const phase:BuckyPhase=voicePhase==='listening'?'listening':voicePhase==='speaking'?'speaking':actionBusy||productBusy||interpretBusy||voicePhase==='processing'||speechPending||micPending?'processing':interactionPhase==='error'?'error':pendingAction||pendingProduct?'review':interactionPhase;
+    const phase:BuckyPhase=voicePhase==='listening'?'listening':voicePhase==='speaking'?'speaking':actionBusy||productBusy||appBusy||interpretBusy||voicePhase==='processing'||speechPending||micPending?'processing':interactionPhase==='error'?'error':hasPendingPreview?'review':interactionPhase;
     const labels:Record<BuckyPhase,string>={idle:'',listening:'Listening',speaking:'Speaking',processing:micPending?'Starting microphone':speechPending?'Preparing spoken response':'Working',review:'Awaiting confirmation',success:'Saved',error:'',cancelled:'Cancelled',warning:''};
     setBuckyPhase(phase,labels[phase],profile?.id);
-  },[active,voicePhase,actionBusy,productBusy,interpretBusy,speechPending,micPending,pendingAction,pendingProduct,interactionPhase,profile?.id]);
+  },[active,voicePhase,actionBusy,productBusy,appBusy,interpretBusy,speechPending,micPending,hasPendingPreview,interactionPhase,profile?.id]);
 
   useEffect(() => {
-    const action=pendingAction??pendingProduct;if(!action)return;
-    recordBuckyEvent({id:action.id,status:'awaiting',title:pendingAction?buckyActionTitle(pendingAction):'Add product',detail:pendingAction?.description??pendingProduct?.name??'',profileId:action.profileId,profileName:action.profileName,currency:action.currency});
-  },[pendingAction,pendingProduct]);
+    const action=pendingAction??pendingProduct??pendingAppAction;if(!action)return;
+    recordBuckyEvent({id:action.id,status:'awaiting',title:pendingAction?buckyActionTitle(pendingAction):pendingAppAction?appActionTitle(pendingAppAction):'Add product',detail:pendingAction?.description??(pendingAppAction?appActionTitle(pendingAppAction):pendingProduct?.name??''),profileId:action.profileId,profileName:action.profileName,currency:action.currency});
+  },[pendingAction,pendingProduct,pendingAppAction]);
 
   // Records saved through Bucky in this session, merged over the host's
   // snapshot so updated calculations are visible immediately. Hosts also
@@ -315,14 +360,23 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     return () => window.speechSynthesis.removeEventListener?.("voiceschanged", update);
   }, [ttsSupported]);
 
-  function speakText(text: string) {
-    if (!ttsSupported || !text.trim() || recognitionRef.current !== null) return;
+  const listenAfterGreetingRef=useRef<()=>void>(()=>{});
+  listenAfterGreetingRef.current=()=>startListening();
+  canResumeVoiceRef.current=()=>active&&inlineVoice&&!hasPendingPreview&&!actionBusy&&!productBusy&&!appBusy&&!interpretBusy&&!speechPending&&!micPending&&!recognitionRef.current&&voicePhase!=='review'&&!window.speechSynthesis?.speaking;
+  function resumeVoice(){continuousVoice.resume(()=>canResumeVoiceRef.current(),()=>listenAfterGreetingRef.current());}
+  function speakText(text: string, afterEnd?:()=>void) {
+    if (!ttsSupported || !text.trim()) return;
+    // Echo prevention: never listen while Bucky speaks. Stop any live
+    // recognition first so Bucky's own voice can't become a new turn.
+    if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* already ended */ } recognitionRef.current = null; }
+    lastSpokenRef.current = text;
     // Never overlap: a new utterance always replaces any current speech.
     const id = ++utteranceIdRef.current;
     window.speechSynthesis.cancel();
     setVoicePhase(p=>p==="speaking"?voiceTransition(p,"stop"):p);
     setSpeechPending(true);
     const utterance = new SpeechSynthesisUtterance(text);
+    let started=false;
     utterance.lang = "en-US";
     if (buckyVoiceRef.current) utterance.voice = buckyVoiceRef.current;
     const settings = voiceSettingsRef.current;
@@ -332,18 +386,21 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     utterance.pitch = tuning.pitch;
     utterance.onstart = () => {
       if (utteranceIdRef.current !== id) return;
+      if(!started && afterEnd){started=true;pushMsg("bucky",text);}
       setSpeechPending(false);
       setVoicePhase((p) => voiceTransition(p, "speak"));
     };
     utterance.onend = () => {
       if (utteranceIdRef.current === id) setSpeechPending(false);
-      if (utteranceIdRef.current === id) setVoicePhase((p) => voiceTransition(p, "end"));
+      if (utteranceIdRef.current === id) {setVoicePhase((p) => voiceTransition(p, "end"));if(afterEnd)queueAfterSpeech(()=>utteranceIdRef.current===id,afterEnd,(callback,delay)=>window.setTimeout(callback,delay));else resumeVoice();}
     };
-    utterance.onerror = () => {
-      if (utteranceIdRef.current === id) {setSpeechPending(false);setInteractionPhase("error");setVoiceError("Spoken playback was unavailable. Your answer is still on screen.");}
-      if (utteranceIdRef.current === id) setVoicePhase((p) => voiceTransition(p, "end"));
+    const playbackFailed=()=>{
+      if(utteranceIdRef.current!==id)return;
+      continuousVoice.stop();utteranceIdRef.current++;setSpeechPending(false);setInteractionPhase('error');setVoicePhase('error');
+      setVoiceError(afterEnd?'The spoken greeting failed. No microphone was started. Try again or type your question.':'Spoken playback was unavailable. Your answer is still on screen.');
     };
-    try {window.speechSynthesis.speak(utterance);} catch {setSpeechPending(false);setVoiceError("Spoken playback was unavailable. Your answer is still on screen.");}
+    utterance.onerror=playbackFailed;
+    try {window.speechSynthesis.speak(utterance);} catch {playbackFailed();}
   }
 
   function stopSpeaking() {
@@ -355,17 +412,23 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   // Hosts (e.g. the app-wide dock) protect unsaved previews from dismissal.
   useEffect(() => {
-    onPendingActionChange?.(pendingAction !== null || pendingProduct !== null);
-  }, [pendingAction, pendingProduct, onPendingActionChange]);
+    onPendingActionChange?.(hasPendingPreview);
+  }, [hasPendingPreview, onPendingActionChange]);
 
-  function ask(text: string, viaVoice = false) {
+  async function ask(text: string, viaVoice = false) {
     const q = text.trim();
     if (!q || !analysis || !profile) return;
+    if (adviceGuardRef.current.isPending()) {
+      setActionError("Bucky is still answering — wait for that answer before sending another request.");
+      return;
+    }
     if(micPending){setVoiceError("Cancel microphone startup before sending a typed request.");return;}
-    if (pendingAction || pendingProduct || actionBusy || productBusy || interpretBusy) {
+    if (hasPendingPreview || actionBusy || productBusy || appBusy || interpretBusy) {
       setActionError("Confirm or cancel the current preview before sending another request.");
       return;
     }
+    // Echo guard: Bucky's own spoken words never become a new request.
+    if (viaVoice && isEchoOfSpeech(q, lastSpokenRef.current)) { resumeVoice(); return; }
     // The input is cleared once a request is successfully processed into
     // a preview or an answer; it is preserved verbatim whenever Bucky asks
     // a clarification or declines, so the user can edit and resend it.
@@ -375,13 +438,36 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     pushMsg("user", q);
     setAiInterpretText("");
     setInterpretNote("");
+    // Read-only financial analysis questions skip every write interpreter
+    // and go straight to Q&A below (deterministic, or live Meta AI when
+    // enabled). Explicit creation commands are never classified this way.
+    const analysisQuestion = isFinancialAnalysisQuestion(q);
+
+    // App-wide routing: an explicitly named profile is used for THIS
+    // request only. The selected profile is never silently switched, and
+    // ambiguous or unknown names clarify instead of guessing.
+    const named = resolveNamedProfile(q, profiles);
+    if (named.status === "ambiguous" || named.status === "named-missing") {
+      const businesses = profiles.filter((p) => p.kind === "business").map((p) => p.name).join(", ");
+      const note: BuckyAnswer = { answer: named.status === "ambiguous" ? `More than one profile matches that name (${named.profiles.map((p) => p.name).join(", ")}). Please use the full, exact profile name — nothing was changed.` : `I couldn't find a business named "${named.name}".${businesses ? ` Your businesses: ${businesses}.` : ""} Nothing was changed.`, facts: [], proposalIds: [], insufficientData: true };
+      setAnswer(note);
+      if (viaVoice && voiceResponsesOnRef.current) speakText(prepareSpeechText(note.answer));
+      else if (viaVoice) { setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice(); }
+      return;
+    }
+    const routedProfile = named.status === "matched" ? named.profile : profile;
+    let routedAnalysis = analysis;
+    if (routedProfile.id !== profile.id) {
+      try { routedAnalysis = analyzeBuckyFinances({ profile: routedProfile, buckets, transactions: effectiveTransactions, products: effectiveProducts, sales, employees }); }
+      catch { setAnswer({ answer: `I couldn't read records for "${routedProfile.name}". Nothing was changed.`, facts: [], proposalIds: [], insufficientData: true }); return; }
+    }
 
     // Add Product first when the command explicitly asks for it: one
     // deterministic business operation with its own preview. It must run
     // before the transaction interpreter, which would otherwise ask
     // "income or expense?" about the price.
-    const productInterpretation = interpretBuckyProductCommand(q, {
-      profile,
+    const productInterpretation = analysisQuestion ? { status: "not-action" as const } : interpretBuckyProductCommand(q, {
+      profile: routedProfile,
       products: effectiveProducts,
       createId: () => `bucky:${newId()}`,
     });
@@ -415,15 +501,38 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         insufficientData: true,
       });
       if (viaVoice && voiceResponsesOnRef.current) speakText(prepareSpeechText(productInterpretation.question));
+      else if (viaVoice) {setVoicePhase((p) => voiceTransition(p, "reset"));resumeVoice();}
+      return;
+    }
+
+    // App-wide actions (employee / stock / bucket / POS cart): preview
+    // first, execution only after Confirm via validated repositories.
+    const appInterpretation = analysisQuestion ? { status: "not-action" as const } : interpretAppAction(q, {
+      profile: routedProfile, products: effectiveProducts, employees, buckets,
+      today: todayLocal(), createId: () => `bucky:${newId()}`,
+    });
+    if (appInterpretation.status === "proposal") {
+      pendingViaVoiceRef.current = viaVoice;
+      setPendingAppAction(appInterpretation.action);
+      setPendingAction(null); setPendingProduct(null);
+      setSavedResult(null); setAppError(""); setQuestion("");
+      setAnswer({ answer: "Here's what I understood. Review the preview below — nothing changes until you tap Confirm.", facts: [], proposalIds: [], insufficientData: false });
+      if (viaVoice && voiceResponsesOnRef.current) speakText("I've prepared a preview. Please check the details on screen, then tap Confirm. Nothing has changed yet.");
       else if (viaVoice) setVoicePhase((p) => voiceTransition(p, "reset"));
+      return;
+    }
+    if (appInterpretation.status === "clarification") {
+      setAnswer({ answer: appInterpretation.question, facts: [], proposalIds: [], insufficientData: true });
+      if (viaVoice && voiceResponsesOnRef.current) speakText(prepareSpeechText(appInterpretation.question));
+      else if (viaVoice) { setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice(); }
       return;
     }
 
     // Bookkeeping actions first: one deterministic pipeline shared by
     // typed and spoken requests. A proposal is only a preview — saving
     // always needs the explicit Confirm button below.
-    const interpretation = interpretBuckyAction(q, {
-      profile,
+    const interpretation = analysisQuestion ? { status: "not-action" as const } : interpretBuckyAction(q, {
+      profile: routedProfile,
       buckets,
       employees,
       transactions: effectiveTransactions,
@@ -464,7 +573,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       else if (viaVoice) setVoicePhase((p) => voiceTransition(p, "reset"));
       return;
     }
-    if (interpretation.status === "unsupported" || detectUnsupportedAction(q)) {
+    if (!analysisQuestion && (interpretation.status === "unsupported" || detectUnsupportedAction(q))) {
       // Honest decline for writes Bucky cannot do (deletes, edits,
       // withdrawals, transfers, creating goals/employees, …).
       const unsupported: BuckyAnswer = {
@@ -477,11 +586,61 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       setInteractionPhase("error");
       recordBuckyEvent({id:"request:"+profile.id+":"+msgIdRef.current,status:"unsupported",title:"Unsupported request",detail:unsupported.answer,profileId:profile.id,profileName:profile.name});
       if (viaVoice && voiceResponsesOnRef.current) speakText(prepareSpeechText(unsupported.answer));
-      else setVoicePhase((p) => voiceTransition(p, "reset"));
+      else {setVoicePhase((p) => voiceTransition(p, "reset"));if(viaVoice)resumeVoice();}
       return;
     }
-    const next = answerBuckyQuestion(q, analysis);
+    const next = answerBuckyQuestion(q, routedAnalysis);
+    // Ordinary questions: when the user has explicitly enabled live Meta
+    // AI in Settings → Bucky & Voice (toggle + memory-only token), route
+    // through the gated /api/bucky/advise path — exactly one request per
+    // intentional submission, guarded against double-submission. Action
+    // previews above never take this path and are never auto-confirmed.
+    if (buckyAdviceMode(liveSettings) === "live") {
+      if (!adviceGuardRef.current.tryStart()) return;
+      setServerBusy(true);
+      setServerNote("Asking live Meta AI…");
+      try {
+        const history = thread.slice(-6).map((m) => ({ role: m.role === "user" ? "user" as const : "bucky" as const, text: m.text.slice(0, 500) }));
+        const res = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis), { mode: "live", liveTestToken: liveToken, history });
+        const liveAnswer: BuckyAnswer = { answer: res.answer, facts: res.evidence, proposalIds: [], insufficientData: false };
+        setAnswer(liveAnswer);
+        setServerNote(describeAdviceSource(res));
+        setQuestion("");
+        if (looksLikeActionAttempt(q)) setAiInterpretText(q);
+        if (viaVoice && voiceResponsesOnRef.current) {
+          speakText(prepareSpeechText(liveAnswer.answer, liveAnswer.facts));
+        } else if (viaVoice) {
+          setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice();
+        }
+      } catch (error) {
+        // Gate/limit/offline failures happen before any trusted model
+        // answer: use the deterministic answer and say so plainly — this
+        // is a labelled fallback, never a silent downgrade or a retry.
+        setAnswer(next);
+        if (next.insufficientData) setInteractionPhase("error");
+        setServerNote(
+          error instanceof BuckyApiError
+            ? `Live Meta AI couldn't be used: ${error.message} Bucky answered deterministically instead — no live answer was used.`
+            : "Live Meta AI couldn't be used. Bucky answered deterministically instead — no live answer was used.",
+        );
+        setQuestion("");
+        if (looksLikeActionAttempt(q)) setAiInterpretText(q);
+        if (viaVoice && voiceResponsesOnRef.current) {
+          speakText(prepareSpeechText(next.answer, next.facts));
+        } else if (viaVoice) {
+          setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice();
+        }
+      } finally {
+        adviceGuardRef.current.finish();
+        setServerBusy(false);
+      }
+      return;
+    }
     setAnswer(next);
+    setServerNote(
+      buckyLiveUnavailableNote(liveSettings) ??
+      "Answered deterministically from your recorded data. Live Meta AI is off, so no paid request was made.",
+    );
     if(next.insufficientData){setInteractionPhase("error");recordBuckyEvent({id:"question:"+profile.id+":"+msgIdRef.current,status:"unsupported",title:q.length>70?q.slice(0,67)+"…":q,detail:"No changes were made. See Bucky’s response above.",profileId:profile.id,profileName:profile.name});}
     setQuestion("");
     // The built-in interpreter couldn't make a record of this, but it
@@ -491,7 +650,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     if (viaVoice && voiceResponsesOnRef.current) {
       speakText(prepareSpeechText(next.answer, next.facts));
     } else if (viaVoice) {
-      setVoicePhase((p) => voiceTransition(p, "reset"));
+      setVoicePhase((p) => voiceTransition(p, "reset"));resumeVoice();
     }
   }
 
@@ -713,7 +872,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         message: `“${product.name}” added to ${pendingProduct.profileName} products. It is now available in Products & Inventory and POS.`,
         facts: [
           { label: "Selling price", value: formatMoney(product.priceMinor, product.currency) },
-          { label: "Opening stock", value: "0" },
+          { label: "Opening stock", value: String(product.stock) },
           { label: "Status", value: "Active" },
         ],
       });
@@ -732,6 +891,74 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       setInteractionPhase(committed?'success':'error');setProductError(message);
     } finally {
       setProductBusy(false);
+    }
+  }
+
+  function cancelPendingAppAction() {
+    if (pendingAppAction) recordBuckyEvent({ id: pendingAppAction.id, status: "cancelled", title: appActionTitle(pendingAppAction), detail: "Nothing was changed.", profileId: pendingAppAction.profileId, profileName: pendingAppAction.profileName, currency: pendingAppAction.currency });
+    setInteractionPhase("cancelled");
+    setPendingAppAction(null);
+    setAppError("");
+    setAnswer({ answer: "Cancelled — nothing was changed.", facts: [], proposalIds: [], insufficientData: false });
+  }
+
+  /** Executes a confirmed app action through the existing validated
+   * repositories and reports the actual persisted result. No confirmation
+   * means this function never runs, so no write can happen. */
+  async function confirmPendingAppAction() {
+    if (!pendingAppAction || appBusy || !profile) return;
+    if (executedAppIdsRef.current.has(pendingAppAction.id)) { setAppError("This action was already completed. It won't run again."); return; }
+    const action = pendingAppAction;
+    recordBuckyEvent({ id: action.id, status: "saving", title: appActionTitle(action), detail: appActionTitle(action), profileId: action.profileId, profileName: action.profileName, currency: action.currency });
+    setAppBusy(true);
+    setAppError("");
+    try {
+      let message = "";
+      let facts: { label: string; value: string }[] = [];
+      if (action.kind === "create-employee") {
+        const record = buildEmployeeRecord(action, nowIso());
+        validateEmployee(record);
+        await employeesRepo.create(record);
+        message = `Employee "${record.name}" added to ${action.profileName}.`;
+        facts = [{ label: "Employee", value: record.name }, { label: "Role", value: record.role ?? "Not set" }, { label: "Status", value: "Active" }];
+      } else if (action.kind === "adjust-stock") {
+        const current = effectiveProducts.find((p) => p.id === action.productId);
+        if (!current) throw new Error(`"${action.productName}" no longer exists. Nothing was changed.`);
+        const nextStock = current.stock + action.delta;
+        await productsRepo.update(current.id, { stock: nextStock });
+        message = `"${current.name}" stock increased by ${action.delta} to ${nextStock}.`;
+        facts = [{ label: "Product", value: current.name }, { label: "New stock", value: String(nextStock) }];
+      } else if (action.kind === "create-bucket") {
+        const record = buildBucketRecord(action, nowIso());
+        validateBucket(record);
+        await bucketsRepo.create(record);
+        message = `Savings bucket "${record.name}" created for ${action.profileName}.`;
+        facts = [{ label: "Bucket", value: record.name }, ...(record.targetMinor ? [{ label: "Goal", value: formatMoney(record.targetMinor, record.currency) }] : [])];
+      } else {
+        // POS cart: queue a single-use handoff; POS consumes it and the
+        // cashier still reviews quantities before atomic checkout.
+        queuePosCartHandoff(window.sessionStorage, { profileId: action.profileId, items: [{ productId: action.productId, quantity: action.quantity }], createdAt: Date.now() });
+        message = `${action.quantity} × "${action.productName}" queued for the POS cart in ${action.profileName}. Open POS to review and check out.`;
+        facts = [{ label: "Product", value: action.productName }, { label: "Quantity", value: String(action.quantity) }];
+        void POS_CART_HANDOFF_KEY;
+      }
+      executedAppIdsRef.current.add(action.id);
+      recordBuckyEvent({ id: action.id, status: "saved", title: appActionTitle(action), detail: message, profileId: action.profileId, profileName: action.profileName, currency: action.currency, recordId: action.id });
+      setSavedResult({ message, facts });
+      setPendingAppAction(null);
+      notifyRecordsChanged({ profileId: action.profileId, kind: action.kind });
+      onRecordsChanged?.();
+      reactMascot("Emotion_Happy");
+      if (action.kind === "pos-cart-add") window.location.hash = "/pos";
+      if (pendingViaVoiceRef.current && voiceResponsesOnRef.current) speakText(prepareSpeechText(message, facts));
+    } catch (error) {
+      const committed = executedAppIdsRef.current.has(action.id);
+      const message = committed ? "Done, but the view could not refresh. Check the relevant page before retrying." : error instanceof Error ? `${error.message} Nothing was changed.` : "The action could not be completed. Nothing was changed.";
+      if (!committed) recordBuckyEvent({ id: action.id, status: "failed", title: appActionTitle(action), detail: message, profileId: action.profileId, profileName: action.profileName, currency: action.currency });
+      setInteractionPhase(committed ? "success" : "error");
+      setAppError(message);
+    } finally {
+      setAppBusy(false);
     }
   }
 
@@ -806,9 +1033,21 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
   }
 
+  function startHomeVoice(){
+    if(hasPendingPreview||actionBusy||productBusy||appBusy||interpretBusy)return;
+    continuousVoice.start();followLatest.current=true;cancelListening();stopSpeaking();setVoiceError('');setPendingTranscript('');setInterimTranscript('');setVoiceHistoryExpanded(false);setVoiceSessionStart(thread.at(-1)?.id??0);
+    if(!recognitionSupported){continuousVoice.stop();setInteractionPhase('error');setVoicePhase('unsupported');setVoiceError("Voice input isn't supported in this browser. You can still type your question.");return;}
+    // One-click reliability: start the microphone synchronously in this
+    // activation instead of after a spoken greeting (the greeting delay
+    // lost the browser's user-activation and caused first-click failure).
+    // The greeting is shown as text; Bucky still speaks answers.
+    pushMsg("bucky", "Hi! How can I help you?");
+    startListening();
+  }
+  function stopHomeVoice(){continuousVoice.stop();cancelListening();stopSpeaking();setVoicePhase('idle');}
   function startListening() {
     if(micPending){cancelListening();return;}
-    if (pendingAction || pendingProduct || actionBusy || productBusy || interpretBusy) {
+    if (hasPendingPreview || actionBusy || productBusy || appBusy || interpretBusy) {
       setVoiceError("Confirm or cancel the current preview before starting another request.");
       return;
     }
@@ -816,6 +1055,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       finishListening();
       return;
     }
+    if(recognitionRef.current)return;
     setVoiceError("");
     setInterimTranscript("");
     setPendingTranscript("");
@@ -863,6 +1103,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         scheduleSilenceTimer();
       }
       if (finalText) {
+        // Drop Bucky's own voice leaking back in; never a new turn.
+        if (isEchoOfSpeech(finalText, lastSpokenRef.current)) return;
+        continuousVoice.heard();
         finalTranscriptRef.current = appendFinalTranscript(finalTranscriptRef.current, finalText);
         // A live result proves the session is healthy; refill the
         // bounded restart budget so long commands can span restarts.
@@ -879,6 +1122,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       // executed automatically.
       setMicPending(false);setInteractionPhase("error");
       recognitionErrorRef.current = event.error;
+      if(event.error!=="no-speech")continuousVoice.stop();
       const mapped = speechRecognitionErrorMessage(event.error);
       setVoicePhase(mapped.phase);
       setVoiceError(mapped.message);
@@ -892,6 +1136,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         return;
       }
       const heard = finalTranscriptRef.current.trim();
+      setVoicePhase("idle");
       if (!recognitionErrorRef.current && !recognitionStopRequestedRef.current) {
         // Unexpected end (browser time limit / long silence) with no
         // explicit user stop: restart a bounded number of times so a
@@ -922,6 +1167,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       finalTranscriptRef.current = "";
       if (heard) {
         settleTranscript(heard);
+      } else if (inlineVoice && continuousVoice.isActive() && (!recognitionErrorRef.current || recognitionErrorRef.current==='no-speech')) {
+        setInterimTranscript('');setVoicePhase('idle');setVoiceError('');
+        if(!continuousVoice.silentEnd(()=>canResumeVoiceRef.current(),()=>listenAfterGreetingRef.current())){setInteractionPhase('error');setVoicePhase('error');setVoiceError('No speech was detected after several attempts. Choose Retry to restart voice.');}
       } else if (!recognitionErrorRef.current) {
         setInterimTranscript("");
         setVoicePhase((p) => (p === "listening" || p === "review" ? voiceTransition(p, "end") : p));
@@ -936,9 +1184,17 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     try {
       recognition.start();
     } catch {
-      setVoicePhase("error");
-      setMicPending(false);setInteractionPhase("error");
-      setVoiceError("Speech recognition couldn't start. Type your question instead.");
+      // A stale session can throw InvalidStateError on the first click;
+      // abort it and retry once synchronously before giving up.
+      try { recognition.abort(); } catch { /* ignore */ }
+      try {
+        recognition.start();
+      } catch {
+        continuousVoice.stop();recognitionRef.current=null;
+        setVoicePhase("error");
+        setMicPending(false);setInteractionPhase("error");
+        setVoiceError("Speech recognition couldn't start. Tap the microphone again, or type your question instead.");
+      }
     }
   }
 
@@ -1008,7 +1264,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   /** Throw the transcript away and listen again from scratch. */
   function retryListening() {
-    if (pendingAction || pendingProduct) { setVoiceError("Confirm or cancel the preview before retrying."); return; }
+    if (hasPendingPreview) { setVoiceError("Confirm or cancel the preview before retrying."); return; }
     if (question === pendingTranscript) setQuestion("");
     setPendingTranscript("");
     setVoiceError("");
@@ -1018,24 +1274,30 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   useEffect(() => {
     if (!active) return;
     const region = conversationScroll.current; if (!region) return;
-    const newest = () => { region.scrollTop = region.scrollHeight; };
+    const newest = () => { if(followLatest.current)region.scrollTop = region.scrollHeight; };
     const frame = requestAnimationFrame(newest);
     const observer = new ResizeObserver(newest); observer.observe(region);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [active, thread.length, pendingAction, pendingProduct]);
+  }, [active, thread.length, hasPendingPreview]);
 
   useEffect(() => {
     if (pendingTranscript && question.trim() === pendingTranscript.trim()) setQuestion("");
-    cancelListening(); stopSpeaking(); setPendingTranscript(''); setInterimTranscript(''); setVoiceError(''); setVoicePhase('idle');
+    continuousVoice.stop();cancelListening(); stopSpeaking(); setPendingTranscript(''); setInterimTranscript(''); setVoiceError(''); setVoicePhase('idle');
   }, [navigationKey]);
 
+  const wasBlockedForVoice=useRef(false);
+  useEffect(()=>{
+    const blocked=hasPendingPreview||voicePhase==='review';
+    if(wasBlockedForVoice.current&&!blocked&&continuousVoice.isActive())resumeVoice();
+    wasBlockedForVoice.current=blocked;
+  },[hasPendingPreview,voicePhase]);
   const consumedRequest = useRef('');
   useEffect(() => {
-    if (!active) { cancelListening(); stopSpeaking(); setPendingTranscript(""); setInterimTranscript(""); setVoiceError(""); setVoicePhase("idle"); }
+    if (!active) { continuousVoice.stop();cancelListening(); stopSpeaking(); setPendingTranscript(""); setInterimTranscript(""); setVoiceError(""); setVoicePhase("idle"); }
   }, [active]);
   useEffect(() => {
     if (!active || !conversationRequest || consumedRequest.current === conversationRequest.id || !analysis) return;
-    if (pendingAction || pendingProduct) return;
+    if (hasPendingPreview) return;
     if (conversationRequest.profileId && profile?.id !== conversationRequest.profileId) {
       if (profiles.some(p => p.id === conversationRequest.profileId)) { setInteractionPhase("idle"); setSelectedProfileId(conversationRequest.profileId); return; }
       consumedRequest.current = conversationRequest.id;
@@ -1043,13 +1305,14 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       return;
     }
     consumedRequest.current = conversationRequest.id;
+    if(conversationRequest.mode==='voice'){startHomeVoice();return;}
     if (conversationRequest.question) { setQuestion(conversationRequest.question); ask(conversationRequest.question); }
-  }, [active, conversationRequest, analysis, profile, pendingAction, pendingProduct, profiles]);
+  }, [active, conversationRequest, analysis, profile, hasPendingPreview, profiles]);
 
   // Leaving the panel always silences Bucky: no orphan mic or speech.
   useEffect(
     () => () => {
-      clearSilenceTimer();
+      continuousVoice.stop();clearSilenceTimer();
 
       recognitionCancelledRef.current = true;
       try {
@@ -1065,7 +1328,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   );
 
   return (
-    <section className="panel bucky-panel" aria-label="Bucky conversation">
+    <section className={inlineVoice?"panel bucky-panel bucky-panel--home-voice":"panel bucky-panel"} aria-label={inlineVoice?"Bucky voice interaction":"Bucky conversation"}>
       {!compact && <div className="bucky-chat-head">
         <BuckyMascot talking={voicePhase === "speaking"} animation={voicePhase === "listening" ? "Listening" : voicePhase === "processing" ? "Thinking" : interactionPhase === "success" ? "Emotion_Happy" : interactionPhase === "error" ? "Emotion_Concerned" : undefined} label="Bucky, your financial intelligence companion" />
         <div>
@@ -1084,8 +1347,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         <p className="alert-error" role="alert">{result.error}</p>
       ) : analysis ? (
         <>
-          <div className="bucky-scroll-region" ref={conversationScroll}>
-          {profiles.length > 1 && (
+          {inlineVoice && <div className="bucky-home-voice-toolbar"><span className={voiceError?'bucky-voice-dot is-error':speechPending||voicePhase==='speaking'||voicePhase==='processing'||interactionPhase==='processing'?'bucky-voice-dot is-busy':voicePhase==='listening'&&!micPending&&recognitionRef.current?'bucky-voice-dot':'bucky-voice-dot is-idle'} role="status"><span className="sr-only">{voiceError?'Voice unavailable':speechPending?'Preparing greeting':voicePhase==='speaking'?'Speaking':micPending?'Starting microphone':voicePhase==='listening'?'Listening':voicePhase==='processing'||interactionPhase==='processing'?'Processing':voicePhase==='review'?'Review transcript':pendingAction||pendingProduct?'Confirmation required':'Ready'}</span></span><div className="bucky-home-voice-actions"><button className="btn ghost small" type="button" onClick={stopHomeVoice}>Stop</button><button className="btn ghost small" type="button" aria-expanded={voiceHistoryExpanded} onClick={()=>setVoiceHistoryExpanded(value=>!value)}>Details</button><button className="btn ghost small" type="button" onClick={()=>{if(!onNavigateAway || onNavigateAway())stopHomeVoice();}}>Close</button></div></div>}
+          <div className="bucky-scroll-region" ref={conversationScroll} onScroll={event=>{const el=event.currentTarget;followLatest.current=el.scrollHeight-el.scrollTop-el.clientHeight<40;}} tabIndex={inlineVoice?0:undefined} role={inlineVoice?'region':undefined} aria-label={inlineVoice?'Voice conversation':undefined}>
+          {inlineVoice && voiceError && <div><p className="alert-error" role="alert">{voiceError}</p><button className="btn ghost small" type="button" disabled={!recognitionSupported} onClick={ttsSupported?startHomeVoice:startListening}>{ttsSupported?'Retry':'Listen without greeting'}</button></div>}
+          {(!inlineVoice || voiceHistoryExpanded) && profiles.length > 1 && (
             <div className="selector-main bucky-profile-row">
               <label htmlFor="bucky-profile">Analysing</label>
               <select
@@ -1117,7 +1382,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
 
 
-          {!analysis.hasAnyData ? (
+          {(!inlineVoice || voiceHistoryExpanded) && (!analysis.hasAnyData ? (
             <div className="empty-state">
               <p>No records to analyse for {analysis.profileName} yet.</p>
               <p className="muted">
@@ -1159,24 +1424,23 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 <li key={l}>{l}</li>
               ))}
             </ul></details>
-          )}
+          ))}
 
 
 
-          {thread.length > 0 && (
+          {voiceMessages.length > 0 && (
             <div className="bucky-thread" aria-live="polite" aria-label="Conversation with Bucky">
-              {thread.map((msg) => (
+              {voiceMessages.map((msg) => (
                 <div key={msg.id} className={msg.role === "user" ? "bucky-msg bucky-msg--user" : "bucky-msg bucky-msg--bucky"}>
-                  {msg.profileName && <small className="bucky-message-context">{msg.profileName}</small>}
                   <p>{msg.profileName ? msg.text.replace("All-time recorded totals for "+msg.profileName+".", "All-time totals.") : msg.text}</p>
-                  {msg.facts.length > 0 && (
+                  {(!inlineVoice||voiceHistoryExpanded)&&msg.facts.length > 0 && (
                     <dl className="bucky-evidence">
                       {msg.facts.map((f) => (
                         <div key={`${f.label}-${f.value}`}><dt>{f.label}</dt><dd>{f.value}</dd></div>
                       ))}
                     </dl>
                   )}
-                  {msg.proposalIds.map((id) => {
+                  {(!inlineVoice||voiceHistoryExpanded)&&msg.proposalIds.map((id) => {
                     const proposal = analysis.proposals.find((p) => p.id === id);
                     return proposal && (!msg.profileId || msg.profileId === profile?.id) ? (
                       <button key={id} className="btn ghost small" type="button" onClick={() => { if (proposal.action.type === "scan" && onScanRequest) { onScanRequest(); return; } if (onNavigateAway && !onNavigateAway()) return; goToProposal(proposal); }}>
@@ -1184,7 +1448,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                       </button>
                     ) : null;
                   })}
-                  {msg.role === "bucky" && ttsSupported && msg.id === thread[thread.length - 1]?.id && (
+                  {(!inlineVoice||voiceHistoryExpanded)&&msg.role === "bucky" && ttsSupported && msg.id === thread[thread.length - 1]?.id && (
                     <div className="row-actions">
                       <button disabled={micPending || voicePhase === "listening" || voicePhase === "processing"} className="btn ghost small" type="button" onClick={() => speakText(prepareSpeechText(msg.text, msg.facts))}>
                         <Icon name="speaker" />Listen
@@ -1206,21 +1470,17 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
               <p className="muted">
                 The built-in interpreter couldn't turn “{aiInterpretText}” into a record, and nothing was saved.
               </p>
-              <div className="field">
-                <label htmlFor="bucky-live-token">Live test token (not saved)</label>
-                <input id="bucky-live-token" className="input" type="password" value={liveToken} onChange={(e) => setLiveToken(e.target.value)} autoComplete="off" placeholder="Token from the local server operator" />
-              </div>
               <div className="row-actions">
                 <button className="btn ghost small" type="button" onClick={() => void tryAiInterpret()} disabled={interpretBusy || !liveToken.trim()}>
                   {interpretBusy ? "Interpreting…" : "Try AI interpretation (uses 1 live request)"}
                 </button>
-                {!liveToken.trim() && <span className="muted">Add a token to try AI interpretation. The suggestion is still checked and previewed before anything is saved.</span>}
+                {!liveToken.trim() && <span className="muted">Enter the live test token in Settings → Bucky &amp; Voice (kept in memory only, never saved). The suggestion is still checked and previewed before anything is saved.</span>}
               </div>
               {interpretNote && <p className="muted" role="status">{interpretNote}</p>}
             </div>
           )}
 
-          {presentation.events.some(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving') && <details className="bucky-action-journal" open><summary>Recent actions</summary><ol>{presentation.events.filter(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving').slice(-3).map(event=><li key={event.id}><span className={'bucky-event-status bucky-event-status--'+event.status}>{ACTION_STATUS_LABELS[event.status]}</span><strong>{event.title}</strong><p>{event.detail}</p></li>)}</ol></details>}
+          {(!inlineVoice || voiceHistoryExpanded) && presentation.events.some(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving') && <details className="bucky-action-journal" open><summary>Recent actions</summary><ol>{presentation.events.filter(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving').slice(-3).map(event=><li key={event.id}><span className={'bucky-event-status bucky-event-status--'+event.status}>{ACTION_STATUS_LABELS[event.status]}</span><strong>{event.title}</strong><p>{event.detail}</p></li>)}</ol></details>}
           {pendingAction && (
             <div className="bucky-action-preview" role="region" aria-label="Review this action before saving">
               <p className="bucky-action-state" role="status">{actionBusy?"Saving…":"Awaiting your confirmation"}</p>
@@ -1272,7 +1532,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 <div><dt>SKU</dt><dd>None</dd></div>
                 <div><dt>Category</dt><dd>None</dd></div>
                 <div><dt>Cost</dt><dd>Not tracked</dd></div>
-                <div><dt>Opening stock</dt><dd>0</dd></div>
+                <div><dt>Opening stock</dt><dd>{pendingProduct.stock}</dd></div>
                 <div><dt>Status</dt><dd>Active</dd></div>
               </dl>
               {pendingProduct.warnings.length > 0 && (
@@ -1294,15 +1554,51 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             </div>
           )}
 
+          {pendingAppAction && (
+            <div className="bucky-action-preview" role="region" aria-label="Review this action before confirming">
+              <p className="bucky-action-state" role="status">{appBusy ? "Working…" : "Awaiting your confirmation"}</p>
+              <h3>{appActionTitle(pendingAppAction)}</h3>
+              <p className="muted">Check every detail. Nothing changes until you confirm.</p>
+              <dl className="bucky-evidence">
+                <div><dt>Profile</dt><dd>{pendingAppAction.profileName}</dd></div>
+                {pendingAppAction.kind === "create-employee" && <><div><dt>Employee</dt><dd>{pendingAppAction.name}</dd></div><div><dt>Role</dt><dd>{pendingAppAction.role ?? "Not set"}</dd></div>{pendingAppAction.salaryRateMinor !== undefined && <div><dt>Salary</dt><dd>{formatMoney(pendingAppAction.salaryRateMinor, pendingAppAction.currency)} / {pendingAppAction.salaryFrequency ?? "monthly"}</dd></div>}</>}
+                {pendingAppAction.kind === "adjust-stock" && <><div><dt>Product</dt><dd>{pendingAppAction.productName}</dd></div><div><dt>Stock</dt><dd>{pendingAppAction.currentStock} → {pendingAppAction.newStock} (+{pendingAppAction.delta})</dd></div></>}
+                {pendingAppAction.kind === "create-bucket" && <><div><dt>Bucket</dt><dd>{pendingAppAction.name}</dd></div><div><dt>Type</dt><dd>Savings</dd></div>{pendingAppAction.targetMinor ? <div><dt>Goal</dt><dd>{formatMoney(pendingAppAction.targetMinor, pendingAppAction.currency)}</dd></div> : null}</>}
+                {pendingAppAction.kind === "pos-cart-add" && <><div><dt>Product</dt><dd>{pendingAppAction.productName}</dd></div><div><dt>Quantity</dt><dd>{pendingAppAction.quantity}</dd></div><div><dt>Unit price</dt><dd>{formatMoney(pendingAppAction.unitPriceMinor, pendingAppAction.currency)}</dd></div></>}
+              </dl>
+              {pendingAppAction.warnings.length > 0 && (
+                <ul className="bucky-action-warnings">
+                  {pendingAppAction.warnings.map((w) => (<li key={w}>{w}</li>))}
+                </ul>
+              )}
+              {appError && <p className="alert-error" role="alert">{appError}</p>}
+              <div className="row-actions">
+                <button className="btn" type="button" onClick={() => void confirmPendingAppAction()} disabled={appBusy}>
+                  {appBusy ? "Working…" : "Confirm"}
+                </button>
+                <button className="btn ghost" type="button" onClick={cancelPendingAppAction} disabled={appBusy}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {serverNote && (
+            <div className="bucky-server-row">
+              <span className="muted" role="status">{serverNote}</span>
+            </div>
+          )}
+
 
 
             {interimTranscript && voicePhase === "listening" && (
-              <p className="bucky-voice-interim" role="status">Heard: {interimTranscript}…</p>
+              <p className="bucky-voice-interim" role="status">{inlineVoice?"YOU: ":"Heard: "}{interimTranscript}…</p>
             )}
             {pendingTranscript && voicePhase === "review" && (
               <div className="bucky-voice-review">
                 <p role="status"><strong>Bucky heard:</strong> “{pendingTranscript}”</p>
-                <p className="muted">Speech stopped early, so this wasn't run automatically. Edit it in the command box above if anything is wrong — nothing runs until you press Run.</p>
+                {inlineVoice&&<label>Transcript<input className="input" value={question} onChange={e=>setQuestion(e.target.value)}/></label>}
+                <p className="muted">Speech stopped early, so this wasn't run automatically. Edit the transcript if anything is wrong — nothing runs until you press Run.</p>
                 <div className="row-actions">
                   <button className="btn small" type="button" onClick={useReviewedTranscript} disabled={!question.trim()}>
                     Run this transcript
@@ -1313,11 +1609,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 </div>
               </div>
             )}
-            {pendingTranscript && voicePhase !== "review" && voicePhase !== "listening" && (
+            {(!inlineVoice||voiceHistoryExpanded)&&pendingTranscript && voicePhase !== "review" && voicePhase !== "listening" && (
               <div className="bucky-voice-heard">
                 <p role="status"><strong>Heard:</strong> “{pendingTranscript}”</p>
                 <div className="row-actions">
-                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={correctTranscript}>
+                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={()=>{if(inlineVoice){stopSpeaking();setQuestion(pendingTranscript);setVoicePhase("review");setVoiceHistoryExpanded(true);}else correctTranscript();}}>
                     Correct
                   </button>
                   <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={retryListening}>
@@ -1329,13 +1625,14 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 </div>
               </div>
             )}
-            {voiceError && <p className="alert-error" role="alert">{voiceError}</p>}
+            {!inlineVoice && voiceError && <p className="alert-error" role="alert">{voiceError}</p>}
             {!recognitionSupported && (
               <p className="muted bucky-voice-note">Voice input isn't supported in this browser — typing works as usual.</p>
             )}
 
           </div>
           <form
+            hidden={inlineVoice}
             className="bucky-ask"
             onSubmit={(e) => {
               e.preventDefault();
@@ -1352,7 +1649,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 placeholder="Ask about your finances…"
                 autoComplete="off"
               />
-              <button className="btn" type="submit" disabled={!question.trim() || micPending || pendingAction !== null || pendingProduct !== null || actionBusy || productBusy || interpretBusy || voicePhase === "listening" || voicePhase === "processing"}>Send</button>
+              <button className="btn" type="submit" disabled={!question.trim() || serverBusy || micPending || pendingAction !== null || pendingProduct !== null || actionBusy || productBusy || interpretBusy || voicePhase === "listening" || voicePhase === "processing"}>Send</button>
               <button
                 className={voicePhase === "listening" ? "btn bucky-mic-btn is-listening" : "btn ghost bucky-mic-btn"}
                 type="button"

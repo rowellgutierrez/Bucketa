@@ -20,6 +20,7 @@ import {
 } from "../lib/pos";
 import BarcodeScanner from "../components/BarcodeScanner";
 import { findProductByBarcode } from "../lib/barcode";
+import { consumePosCartHandoff } from "../lib/buckyAppActions";
 import Receipt from "../components/Receipt";
 
 type Status = "loading" | "ready" | "error";
@@ -57,6 +58,7 @@ export default function PosPage() {
   const pendingSaleIdRef = useRef("");
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [selectedSaleId, setSelectedSaleId] = useState("");
+  const [showAllSales, setShowAllSales] = useState(false);
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
   const [printPending, setPrintPending] = useState(false);
 
@@ -90,11 +92,30 @@ export default function PosPage() {
     return () => clearTimeout(timer);
   }, [receiptSale, printPending]);
 
+  /** Bucky POS-cart handoff: queued items join the cart once, capped at stock. */
+  function applyBuckyHandoff(forProfileId: string, list: Product[]) {
+    try {
+      const handoff = consumePosCartHandoff(window.sessionStorage, forProfileId);
+      if (!handoff) return;
+      setCart((prev) => {
+        let next = prev;
+        for (const item of handoff.items) {
+          const product = list.find((p) => p.id === item.productId);
+          if (!product || product.stock <= 0) continue;
+          for (let i = 0; i < item.quantity; i += 1) next = addToCart(next, product);
+        }
+        return next;
+      });
+      setNotice("Bucky queued item(s) added to the cart. Review quantities before checkout.");
+    } catch { /* storage unavailable: cashier adds manually */ }
+  }
+
   async function loadBusinessData(forProfileId: string) {
     const [list, saleList] = await Promise.all([
       productsRepo.listByProfile(forProfileId),
       salesRepo.listByProfile(forProfileId),
     ]);
+    applyBuckyHandoff(forProfileId, list);
     setProducts(
       [...list].sort(
         (a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name),
@@ -144,6 +165,7 @@ export default function PosPage() {
     setNotice("");
     setLastSale(null);
     setSelectedSaleId("");
+    setShowAllSales(false);
     pendingSaleIdRef.current = "";
     try {
       await loadBusinessData(id);
@@ -233,11 +255,12 @@ export default function PosPage() {
 
   return (
     <section className="page finance-page pos-page">
-      {scanning && activeProfile && <div className="card"><BarcodeScanner onClose={() => setScanning(false)} onDetected={code => {
+      {scanning && activeProfile && <div className="card"><BarcodeScanner continuous onClose={() => setScanning(false)} hint="Point the camera at a barcode — in-stock products are added automatically. You can also type the code below." onDetected={code => {
         const product = findProductByBarcode(products, activeProfile.id, code);
-        if (!product || product.currency !== activeProfile.currency) { setCheckoutError("No active product matches this barcode in this business."); return; }
-        if (product.stock <= 0) { setCheckoutError("This product is out of stock."); return; }
-        setCart(previous => addToCart(previous, product)); setCheckoutError(""); setNotice('Added ' + product.name + '. Review quantities before checkout.');
+        if (!product) { setNotice(""); setCheckoutError(`Unknown barcode ${code}: no active product matches it in this business. Check the code or add the product first.`); return; }
+        if (product.currency !== activeProfile.currency) { setCheckoutError(`"${product.name}" is priced in ${product.currency}, not ${activeProfile.currency}. Nothing was added.`); return; }
+        if (product.stock <= 0) { setCheckoutError(`"${product.name}" is out of stock. Nothing was added.`); return; }
+        setCart(previous => addToCart(previous, product)); setCheckoutError(""); setNotice(`Added ${product.name}. Keep scanning or review quantities before checkout.`);
       }} /></div>}
       <PageHeader
         className="workspace-page-header"
@@ -378,7 +401,7 @@ export default function PosPage() {
                       <p className="muted">Tap a product to start a sale.</p>
                     ) : (
                       <>
-                        <ul className="clean-list">
+                        <ul className="clean-list pos-cart-items" tabIndex={0} aria-label="Cart items">
                           {cartItems.map((item) => {
                             const product = products.find((p) => p.id === item.productId);
                             if (!product) return null;
@@ -427,6 +450,7 @@ export default function PosPage() {
                             );
                           })}
                         </ul>
+                        <div className="pos-cart-footer">
                         <dl className="pos-totals">
                           <div><dt>Subtotal</dt><dd>{formatMoney(totalMinor, activeProfile.currency)}</dd></div>
                           <div><dt>Total</dt><dd>{formatMoney(totalMinor, activeProfile.currency)}</dd></div>
@@ -487,6 +511,7 @@ export default function PosPage() {
                             </div>
                           </form>
                         )}
+                        </div>
                       </>
                     )}
                     {checkoutError && !showSummary && (
@@ -506,7 +531,7 @@ export default function PosPage() {
                     <p className="muted">No sales yet for {activeProfile.name}.</p>
                   ) : (
                     <ul className="clean-list">
-                      {sales.map((sale) => (
+                      {(showAllSales ? sales : sales.slice(0, 3)).map((sale) => (
                         <li key={sale.id} className="cart-row">
                           <div>
                             <strong>{sale.receiptNumber ?? sale.id}</strong>
@@ -547,6 +572,12 @@ export default function PosPage() {
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {sales.length > 3 && (
+                    <div className="history-more">
+                      <span className="muted">Showing {showAllSales ? sales.length : 3} of {sales.length} sales</span>
+                      <button className="btn ghost small" type="button" aria-expanded={showAllSales} onClick={() => setShowAllSales((v) => !v)}>{showAllSales ? "Show less" : "See more"}</button>
+                    </div>
                   )}
                 </section>
               </>

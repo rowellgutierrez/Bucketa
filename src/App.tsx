@@ -8,6 +8,7 @@ import ProductsPage from "./pages/ProductsPage";
 import PosPage from "./pages/PosPage";
 import EmployeesPage from "./pages/EmployeesPage";
 import ScannerPage from "./pages/ScannerPage";
+import CreativeStudioPage from "./pages/CreativeStudioPage";
 import SettingsPage from "./pages/SettingsPage";
 
 const ROUTES: Route[] = [
@@ -19,6 +20,7 @@ const ROUTES: Route[] = [
   { id: "pos", label: "Sales / POS", shortLabel: "POS", group: "Business tools" },
   { id: "employees", label: "Employees and Salaries", shortLabel: "Staff", group: "Business tools" },
   { id: "scanner", label: "AI Record Scanner", shortLabel: "Scanner", group: "Business tools", planned: true },
+  { id: "creative", label: "Bucky Creative Studio", shortLabel: "Studio", group: "Business tools" },
   { id: "settings", label: "Settings", shortLabel: "Settings", group: "General" },
 ];
 
@@ -62,6 +64,7 @@ export default function App() {
       {active === "pos" && <PosPage />}
       {active === "employees" && <EmployeesPage />}
       {active === "scanner" && <ScannerPage />}
+      {active === "creative" && <CreativeStudioPage />}
       {active === "settings" && <SettingsPage />}
     </Shell>
   );

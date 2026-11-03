@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isEchoOfSpeech,
+  shouldInterruptSpeech,
+  voicePhaseLabel,
+  queueAfterSpeech,
+  createContinuousVoiceSession,
   appendFinalTranscript,
   buckyUtteranceTuning,
   canRestartRecognition,
@@ -167,3 +172,64 @@ test("preferred synthesis voice ranks natural English voices first", () => {
   const result=speechRecognitionErrorMessage('language-not-supported');
   assert.equal(result.phase,'error');assert.match(result.message,/selected speech language/);
  });
+
+test('Speech completion waits through the quiet gap and cancellation prevents microphone startup',()=>{
+ let current=true,starts=0,queued: (()=>void)|undefined;
+ const schedule=(callback:()=>void,delay:number)=>{assert.equal(delay,250);queued=callback;};
+ queueAfterSpeech(()=>current,()=>starts++,schedule);assert.equal(starts,0);queued?.();assert.equal(starts,1);
+ queueAfterSpeech(()=>current,()=>starts++,schedule);current=false;queued?.();assert.equal(starts,1);
+ queued=undefined;queueAfterSpeech(()=>current,()=>starts++,schedule);assert.equal(queued,undefined);
+});
+
+function sessionHarness(){
+ let nextId=0;const tasks=new Map<number,()=>void>();
+ const session=createContinuousVoiceSession((callback,delay)=>{assert.equal(delay,250);tasks.set(++nextId,callback);return nextId;},id=>{tasks.delete(id);});
+ return {session,tasks,flush(){const callbacks=[...tasks.values()];tasks.clear();callbacks.forEach(callback=>callback());}};
+}
+test('A completed spoken response re-arms recognition after the quiet gap',()=>{
+ const h=sessionHarness();let starts=0,playing=false;const ready=()=>!playing;
+ h.session.start();h.session.resume(ready,()=>starts++);assert.equal(starts,0);h.flush();assert.equal(starts,1);
+ playing=true;h.session.resume(ready,()=>starts++);h.flush();assert.equal(starts,1);
+ playing=false;h.session.resume(ready,()=>starts++);h.flush();assert.equal(starts,2);
+});
+test('Several consecutive turns re-arm once each and duplicate completion events coalesce',()=>{
+ const h=sessionHarness();let starts=0;h.session.start();
+ for(let turn=0;turn<4;turn++){h.session.heard();h.session.resume(()=>true,()=>starts++);h.session.resume(()=>true,()=>starts++);assert.equal(h.tasks.size,1);h.flush();assert.equal(starts,turn+1);}
+});
+test('Stop and Close invalidate pending capture and later stale TTS callbacks',()=>{
+ for(const action of ['Stop','Close']){const h=sessionHarness();let starts=0;h.session.start();h.session.resume(()=>true,()=>starts++);const stale=[...h.tasks.values()][0];h.session.stop();stale();h.session.resume(()=>true,()=>starts++);h.flush();assert.equal(starts,0,action);assert.equal(h.session.isActive(),false);}
+});
+test('Recognition failure pauses automatic listening until an explicit fresh session',()=>{
+ const h=sessionHarness();let starts=0;h.session.start();h.session.resume(()=>true,()=>starts++);h.session.stop();h.flush();assert.equal(starts,0);assert.equal(h.session.isActive(),false);
+ h.session.start();h.session.resume(()=>true,()=>starts++);h.flush();assert.equal(starts,1);
+});
+test('TTS failure cannot create an automatic restart loop',()=>{
+ const h=sessionHarness();let starts=0;h.session.start();h.session.stop();
+ for(let i=0;i<10;i++)h.session.resume(()=>true,()=>starts++);
+ h.flush();assert.equal(starts,0);assert.equal(h.tasks.size,0);
+});
+test('Silence retries are bounded and a successful utterance resets the budget',()=>{
+ const h=sessionHarness();h.session.start();assert.equal(h.session.silentEnd(()=>true,()=>{}),true);h.flush();assert.equal(h.session.silentEnd(()=>true,()=>{}),true);h.flush();h.session.heard();assert.equal(h.session.silentEnd(()=>true,()=>{}),true);h.flush();assert.equal(h.session.silentEnd(()=>true,()=>{}),true);h.flush();assert.equal(h.session.silentEnd(()=>true,()=>{}),false);assert.equal(h.session.isActive(),false);
+});
+test("echo of Bucky's own speech is never treated as a new user turn", () => {
+  const spoken = "I've prepared a preview. Please check the details on screen, then tap Confirm save.";
+  assert.equal(isEchoOfSpeech(spoken, spoken), true);
+  assert.equal(isEchoOfSpeech("check the details on screen then tap confirm", spoken), true);
+  assert.equal(isEchoOfSpeech("Record 500 pesos expense for rice", spoken), false);
+  assert.equal(isEchoOfSpeech("", spoken), false);
+  assert.equal(shouldInterruptSpeech({ transcript: "stop", lastSpoken: spoken, isFinal: true }), true);
+  assert.equal(shouldInterruptSpeech({ transcript: spoken, lastSpoken: spoken, isFinal: true }), false);
+  assert.equal(shouldInterruptSpeech({ transcript: "hello bucky", lastSpoken: spoken, isFinal: false }), false);
+});
+
+test("voice phase labels cover Listening, Thinking, Speaking and Error", () => {
+  assert.equal(voicePhaseLabel("listening"), "Listening");
+  assert.equal(voicePhaseLabel("processing"), "Thinking");
+  assert.equal(voicePhaseLabel("speaking"), "Speaking");
+  assert.equal(voicePhaseLabel("error"), "Voice error");
+  assert.equal(voicePhaseLabel("idle", true), "Starting microphone");
+});
+
+test('Pending review/confirmation blocks capture without executing any action',()=>{
+ const h=sessionHarness();let starts=0,blocked=true;h.session.start();h.session.resume(()=>!blocked,()=>starts++);h.flush();assert.equal(starts,0);blocked=false;h.session.resume(()=>!blocked,()=>starts++);h.flush();assert.equal(starts,1);
+});

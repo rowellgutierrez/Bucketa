@@ -20,6 +20,7 @@ import {
   validateModelInterpretation,
 } from "./buckyInterpret.mjs";
 import { extractWithMock } from "./mockExtractor.mjs";
+import { buildCreativeImageRequest, creativeImageStatus, META_IMAGE_MODEL, sendCreativeImage, validateCreativeEditRequest } from "./creativeImage.mjs";
 import { isValidCurrencyCode } from "./money.mjs";
 import { validateExtraction } from "./validateExtraction.mjs";
 import {
@@ -128,13 +129,13 @@ async function handleExtract(req, res, { config, liveLimiter, fetchImpl }) {
 }
 
 /**
- * POST /api/bucky/advise — Bucky Agent 1.0.
+ * POST /api/bucky/advise â€” Bucky Agent 1.0.
  * Default: deterministic fallback computed in code from the strictly
  * validated aggregated summary (always labelled source:
  * "deterministic-fallback"). Live Meta reasoning only when mode:"live"
  * AND all live gates pass AND the session limiter allows it; model
  * output is validated (allowlisted actions, grounded numbers) and any
- * failure falls back deterministically with a warning — never silently.
+ * failure falls back deterministically with a warning â€” never silently.
  * Evidence in every response is computed server-side, never model-made.
  */
 async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
@@ -172,6 +173,7 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
     const request = buildMetaAdviceRequest({
       question: validated.question,
       summary: validated.summary,
+      history: validated.history,
       apiKey: getModelApiKey(),
     });
     const raw = await sendMetaAdvice(request, fetchImpl);
@@ -188,7 +190,7 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
   } catch (err) {
     // Upstream or validation failure: deterministic fallback, labelled,
     // with a warning. Model output is never partially trusted. Only the
-    // safe diagnostic category/status is logged and returned — never
+    // safe diagnostic category/status is logged and returned â€” never
     // bodies, headers, credentials, or stack traces.
     const diagnostic = safeMetaDiagnostic(err);
     console.log(metaDiagnosticLogLine("bucky-advise/live", diagnostic));
@@ -211,7 +213,7 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
 }
 
 /**
- * POST /api/bucky/interpret — Phase D model-assisted interpretation.
+ * POST /api/bucky/interpret â€” Phase D model-assisted interpretation.
  * The browser's deterministic interpreter is the default and the fallback.
  * Fallback mode never calls the model: it answers { source:
  * "deterministic", proposal: null } and the client uses its local parser.
@@ -220,7 +222,7 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
  * validated structured proposal. The browser cross-checks that proposal
  * against the user's own words and real records before showing the usual
  * preview; nothing here writes data, and any live failure degrades to
- * "no proposal" with a safe diagnostic — never to a trusted guess.
+ * "no proposal" with a safe diagnostic â€” never to a trusted guess.
  */
 async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }) {
   if (!req.headers["content-type"]?.includes("application/json")) {
@@ -280,6 +282,74 @@ async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }
   }
 }
 
+/**
+ * Bucky Creative Studio image editing.
+ * GET /api/creative/status â€” free, local status; never calls Meta.
+ * POST /api/creative/edit â€” validates image + prompt, then refuses
+ * BEFORE any Meta call while image editing is unverified for this
+ * account (see creativeImage.mjs). No paid request, retry, or fake
+ * image is possible from this route today. When account access is
+ * separately verified, sending must go through assertLiveAllowed +
+ * liveLimiter, one image per user-initiated request.
+ */
+/**
+ * Bucky Creative Studio image editing (Muse Image 1.0, Responses API).
+ * GET /api/creative/status â€” free, local status; never calls Meta.
+ * POST /api/creative/edit â€” validates image + prompt first. Non-live
+ * requests are refused (501) before any Meta call: there is no mock
+ * generation, because a fake image must never be presented as AI.
+ * Live requests require mode:"live" AND the full triple gate
+ * (ENABLE_LIVE_META + server MODEL_API_KEY + per-request
+ * x-bucketa-live-test token) AND one slot of the shared session
+ * limiter, consumed before the single upstream attempt. No retries.
+ * The upstream envelope is parsed server-side; only the validated PNG
+ * data URL reaches the browser â€” never raw upstream bodies.
+ */
+async function handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl }) {
+  if (!req.headers["content-type"]?.includes("application/json")) {
+    throw errors.invalidRequest();
+  }
+  let payload;
+  try {
+    payload = JSON.parse((await readBody(req)).toString("utf8"));
+  } catch (error) {
+    if (error instanceof PublicError) throw error;
+    throw errors.invalidRequest();
+  }
+  let validated;
+  try {
+    validated = validateCreativeEditRequest(payload);
+  } catch {
+    throw errors.invalidRequest();
+  }
+  const imageBuffer = decodeBase64Image(payload.imageBase64);
+  if (!imageBuffer) throw errors.unsupportedImage();
+  const { mediaType } = validateImageBuffer(imageBuffer, payload.mediaType);
+
+  if (validated.mode !== "live") {
+    throw errors.imageEditingUnverified();
+  }
+  assertLiveAllowed({
+    liveMetaEnabled: config.liveMetaEnabled,
+    modelApiKey: getModelApiKey(),
+    liveTestToken: getLiveTestToken(),
+    requestToken: req.headers["x-bucketa-live-test"],
+  });
+  liveLimiter.consume();
+  const request = buildCreativeImageRequest({
+    imageBase64: payload.imageBase64,
+    mediaType,
+    prompt: validated.prompt,
+    history: validated.history,
+    apiKey: getModelApiKey(),
+  });
+  const image = await sendCreativeImage(request, fetchImpl);
+  sendJson(res, 200, {
+    model: META_IMAGE_MODEL,
+    imageDataUrl: `data:${image.mediaType};base64,${image.imageBase64}`,
+  });
+}
+
 async function handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl}) {
  if(!req.headers['content-type']?.includes('application/json')) throw errors.invalidRequest();
  let payload;
@@ -323,7 +393,18 @@ export function createAppServer(config = getConfig(), deps = {}) {
             liveModel: META_MODEL_ID,
             liveCompatibilityVerified: false,
           },
+          creativeImage: creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured, liveTestTokenConfigured: config.liveTestTokenConfigured }),
         });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/creative/status") {
+        status = 200;
+        sendJson(res, status, creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured, liveTestTokenConfigured: config.liveTestTokenConfigured }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/creative/edit") {
+        await handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl });
+        status = 200;
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/bucky/advise") {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { assertBarcode, normalizeBarcode } from "../data/validation.ts";
-import { shouldAcceptScan } from "../lib/barcode.ts";
+import { shouldAcceptPosScan, shouldAcceptScan } from "../lib/barcode.ts";
 import Icon from "./ui/Icon";
 
 interface DetectedBarcode { rawValue: string; format: string }
@@ -28,10 +28,13 @@ export default function BarcodeScanner({
   onDetected,
   onClose,
   hint = "Point the camera at a barcode, or type the code below.",
+  continuous = false,
 }: {
   onDetected: (code: string) => void;
   onClose: () => void;
   hint?: string;
+  /** POS mode: keep scanning, auto-accept with cooldown dedupe, no latch. */
+  continuous?: boolean;
 }) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [message, setMessage] = useState("");
@@ -129,7 +132,7 @@ export default function BarcodeScanner({
     const timer = window.setInterval(() => {
       const video = videoRef.current;
       const detector = detectorRef.current;
-      if (!video || !detector || video.readyState < 2 || detectingRef.current || lastScanRef.current) return;
+      if (!video || !detector || video.readyState < 2 || detectingRef.current || (!continuous && lastScanRef.current)) return;
       const generation = generationRef.current;
       detectingRef.current = true;
       void detector
@@ -140,16 +143,18 @@ export default function BarcodeScanner({
           if (!code) return;
           try { assertBarcode(code); } catch { setMessage("Invalid barcode checksum or format. Use a valid code."); return; }
           const now = Date.now();
-          if (!shouldAcceptScan(lastScanRef.current, code, now)) return;
+          const accepted = continuous ? shouldAcceptPosScan(lastScanRef.current, code, now) : shouldAcceptScan(lastScanRef.current, code, now);
+          if (!accepted) return;
           lastScanRef.current = { code, at: now };
           setAcceptedCode(code);
           onDetectedRef.current(code);
+          if (continuous) window.setTimeout(() => { if (mountedRef.current) setAcceptedCode(""); }, 1500);
         })
         .catch(() => undefined)
         .finally(() => { detectingRef.current = false; });
     }, 250);
     return () => window.clearInterval(timer);
-  }, [phase]);
+  }, [phase, continuous]);
 
   function submitManual(event: FormEvent) {
     event.preventDefault();
@@ -176,7 +181,9 @@ export default function BarcodeScanner({
       {phase === "starting" && <p role="status">Starting camera… allow camera access if your browser asks.</p>}
       {message && <p className={phase === "error" ? "alert-error" : "field-hint"} role={phase === "error" ? "alert" : "status"}>{message}</p>}
       {!message && <p className="field-hint">{hint}</p>}
-      {acceptedCode && <div className="barcode-scan-status" role="status"><p>Detected {acceptedCode}. Tap Scan again before the next camera scan.</p><button className="btn" type="button" onClick={() => {lastScanRef.current = null; setAcceptedCode(''); setMessage('');}}>Scan again</button></div>}
+      {acceptedCode && (continuous
+        ? <div className="barcode-scan-status" role="status"><p>Scanned {acceptedCode} — keep scanning, or close when done.</p></div>
+        : <div className="barcode-scan-status" role="status"><p>Detected {acceptedCode}. Tap Scan again before the next camera scan.</p><button className="btn" type="button" onClick={() => {lastScanRef.current = null; setAcceptedCode(''); setMessage('');}}>Scan again</button></div>)}
       <form className="barcode-manual" onSubmit={submitManual}>
         <div className="field">
           <label htmlFor="barcode-manual-input">Barcode</label>

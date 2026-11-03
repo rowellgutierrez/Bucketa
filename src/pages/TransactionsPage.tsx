@@ -1,6 +1,7 @@
 import { buildActivity, historyHref, transactionsHrefForProfile, parseHistoryScope, profileIdFromHash, selectHistory, type HistoryRequest } from "../lib/historyScope";
 import { onRecordsChanged } from "../lib/dataChange";
 import PageHeader from "../components/ui/PageHeader";
+import HistoryControls,{HistoryMore,useHistoryView} from "../components/HistoryControls";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import TransactionRow from "../components/TransactionRow";
 import Icon from "../components/ui/Icon";
@@ -120,6 +121,7 @@ function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfil
   }, [deleteTarget]);
 
   const activeProfile = profiles.find((p) => p.id === profileId);
+  const businessHistory=useHistoryView(transactions,profileId);
   const bucketName = (id: string | null) =>
     id ? (buckets.find((b) => b.id === id)?.name ?? "Unknown bucket") : null;
   const editingTxn = editingId
@@ -790,25 +792,25 @@ function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfil
           )}
 
           <section className="panel txn-history" aria-labelledby="txn-history-heading">
+            <HistoryControls view={businessHistory}/>
             <div className="panel-head">
               <h2 id="txn-history-heading">History for {activeProfile.name}</h2>
               <span className="count-badge">
-                {transactions.length} {transactions.length === 1 ? "record" : "records"}
+                {businessHistory.matches.length} {businessHistory.matches.length === 1 ? "record" : "records"}
               </span>
             </div>
             {notice && !showForm && <p className="notice" role="status">{notice}</p>}
 
-            {transactions.length === 0 ? (
+            {businessHistory.matches.length === 0 ? (
               <div className="empty-state dash-empty">
-                <p>No transactions yet for {activeProfile.name}.</p>
+                <p>No transactions match these history filters for {activeProfile.name}.</p>
                 <p className="muted">
-                  Use Add Transaction to record the first income or expense.
-                  Records from other businesses are not shown here.
+                  Try a different date range or currency. Records from other businesses stay separate.
                 </p>
               </div>
             ) : (
               <ul className="txn-list">
-                {transactions.map((txn) => {
+                {businessHistory.visible.map((txn) => {
                   const editable = isCorrectableTransaction(txn);
                   const assignedBucket = bucketName(txn.bucketId);
                   return (
@@ -851,6 +853,7 @@ function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfil
                 })}
               </ul>
             )}
+          <HistoryMore view={businessHistory}/>
           </section>
         </>
       )}
@@ -928,6 +931,7 @@ function CombinedRecords({ scope }: { scope: "all" | "personal" }) {
   const records = (data?.records ?? [])
     .filter((txn) => profileById.has(txn.profileId) && (scope === "all" || profileById.get(txn.profileId)?.kind === "personal"))
     .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const combinedHistory=useHistoryView(records,scope);
 
   return (
     <section className="page transactions-page">
@@ -948,18 +952,19 @@ function CombinedRecords({ scope }: { scope: "all" | "personal" }) {
         <div className="card loading-state" role="status">Loading records…</div>
       ) : (
         <section className="panel txn-history" aria-label={scope === "all" ? "All records" : "Personal records"}>
+          <HistoryControls view={combinedHistory}/>
           <div className="panel-head">
             <h2>{scope === "all" ? "All records" : "Personal records"}</h2>
-            <span className="count-badge">{records.length} {records.length === 1 ? "record" : "records"}</span>
+            <span className="count-badge">{combinedHistory.matches.length} {combinedHistory.matches.length === 1 ? "record" : "records"}</span>
           </div>
-          {records.length === 0 ? (
+          {combinedHistory.matches.length === 0 ? (
             <div className="empty-state">
-              <p>{scope === "all"
+              <p>{records.length ? "No records match these history filters. Try another date range or currency." : scope === "all"
                 ? "No records yet. Add a business transaction, or record something in Personal Finance."
                 : "No personal records yet. Add income, expenses, or savings in Personal Finance."}</p>
             </div>
           ) : (
-            <ul className="txn-list">{records.map((txn) => {
+            <ul className="txn-list">{combinedHistory.visible.map((txn) => {
               const profile = profileById.get(txn.profileId);
               const bucket = data.buckets.find((b) => b.id === txn.bucketId);
               return (
@@ -978,7 +983,8 @@ function CombinedRecords({ scope }: { scope: "all" | "personal" }) {
               );
             })}</ul>
           )}
-        </section>
+        <HistoryMore view={combinedHistory}/>
+          </section>
       )}
     </section>
   );
@@ -999,7 +1005,8 @@ function FullHistory({ request }: { request: HistoryRequest }) {
       .catch(reason => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
   }, [request.context, attempt]);
-  const selection = data && request.context ? selectHistory(data.records, data.profiles, request.context) : null;
+  const selection = data && request.context ? selectHistory(data.records, data.profiles, {...request.context,from:'',to:''}) : null;
+  const fullHistory=useHistoryView(selection?.records??[],JSON.stringify(request.context),request.context??{from:'',to:''});
   const problem = request.error || error || selection?.error;
   const context = request.context;
   const scopeLabel = !context ? "Selection unavailable" : context.scope === "business" ? data?.profiles.find(p => p.id === context.profileId)?.name ?? "Business" : context?.scope === "personal" ? "Personal profiles" : "All profiles";
@@ -1009,15 +1016,16 @@ function FullHistory({ request }: { request: HistoryRequest }) {
       actions={<a className="btn ghost" href={context?.scope === "business" ? transactionsHrefForProfile(context.profileId) : "#/transactions"}>Manage business transactions</a>} />
     <div className="history-context card">
       <strong>{scopeLabel}</strong>
-      {context && <span className="muted">{context.from || "Beginning"} → {context.to || "All dates"} · All recorded currencies</span>}
+      {context && <span className="muted">Opened with Home dates: {context.from || "Beginning"} → {context.to || "All dates"}. Adjust history filters below.</span>}
       <a href="#/dashboard">Return to Home</a>
     </div>
     {problem ? <div className="card feedback-error"><p className="alert-error" role="alert">{problem}</p>{error && <button className="btn" onClick={() => setAttempt(n => n + 1)}>Retry</button>}</div>
       : !data ? <div className="card loading-state" role="status">Loading history…</div>
       : <section className="panel txn-history" aria-labelledby="full-history-heading">
-        <div className="panel-head"><h2 id="full-history-heading">All matching activity</h2><span className="count-badge">{selection?.records.length ?? 0} {selection?.records.length === 1 ? "record" : "records"}</span></div>
-        {!selection?.records.length ? <div className="empty-state"><p>No records match this selection.</p><a href="#/dashboard">Choose different Home filters</a></div>
-          : <ul className="txn-list">{selection.records.map(txn => {
+        <div className="panel-head"><h2 id="full-history-heading">All matching activity</h2><span className="count-badge">{fullHistory.matches.length} {fullHistory.matches.length === 1 ? "record" : "records"}</span></div>
+        <HistoryControls view={fullHistory}/>
+        {!fullHistory.matches.length ? <div className="empty-state"><p>No records match this selection.</p><a href="#/dashboard">Choose different Home filters</a></div>
+          : <ul className="txn-list">{fullHistory.visible.map(txn => {
             const bucket = data.buckets.find(b => b.id === txn.bucketId);
             return <TransactionRow
               key={txn.id}
@@ -1032,6 +1040,7 @@ function FullHistory({ request }: { request: HistoryRequest }) {
               </>}
             />;
           })}</ul>}
-      </section>}
+      <HistoryMore view={fullHistory}/>
+          </section>}
   </section>;
 }

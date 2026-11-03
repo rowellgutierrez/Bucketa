@@ -123,6 +123,9 @@ export function assertBarcode(value: unknown): string {
 }
 
 export function validateProduct(r: Product): Product {
+  if (r.photoDataUrl !== null && r.photoDataUrl !== undefined) {
+    if (typeof r.photoDataUrl !== "string" || !r.photoDataUrl.startsWith("data:image/") || r.photoDataUrl.length > 2_500_000) fail("product photo is invalid or too large.");
+  }
   assertName(r.name);
   if (r.sku !== null && r.sku !== undefined) assertName(r.sku, "sku");
   if (r.barcode !== null && r.barcode !== undefined) assertBarcode(r.barcode);

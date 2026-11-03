@@ -6,8 +6,8 @@ import BuckyDock from "./BuckyDock";
 export type Route = { id: string; label: string; shortLabel: string; group: string; planned?: boolean };
 type Props = { routes: Route[]; active: string; onNavigate: (id: string) => void; dark: boolean; onToggleTheme: () => void; children: ReactNode };
 const BOTTOM_IDS = ["dashboard", "personal", "buckets"];
-const icons: Record<string, IconName> = { dashboard: "dashboard", personal: "personal", buckets: "buckets", transactions: "transactions", scanner: "scanner", products: "products", pos: "pos", employees: "employees", settings: "settings" };
-const labels: Record<string, string> = { buckets: "Buckets", scanner: "Bucky Record Scanner", products: "Products & Inventory", pos: "POS / Sales", employees: "Employees" };
+const icons: Record<string, IconName> = { dashboard: "dashboard", personal: "personal", buckets: "buckets", transactions: "transactions", scanner: "scanner", creative: "imagePlus", products: "products", pos: "pos", employees: "employees", settings: "settings" };
+const labels: Record<string, string> = { buckets: "Buckets", scanner: "Bucky Record Scanner", creative: "Bucky Creative Studio", products: "Products & Inventory", pos: "POS / Sales", employees: "Employees" };
 const isPlanned = (route: Route) => route.planned && route.id !== "scanner";
 
 export default function Shell({ routes, active, onNavigate, dark, onToggleTheme, children }: Props) {

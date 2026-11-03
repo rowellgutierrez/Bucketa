@@ -9,6 +9,9 @@ const listeners=new Set<()=>void>();
 const emit=()=>{for(const listener of listeners){try{listener();}catch{ /* UI subscriber unavailable. */ }}};
 export const getBuckyPresentation=()=>snapshot;
 export function subscribeBuckyPresentation(listener:()=>void):()=>void{listeners.add(listener);return()=>{listeners.delete(listener);};}
+let inline=false;
+export function getBuckyInline(){return inline;}
+export function setBuckyInline(value:boolean){if(inline===value)return;inline=value;emit();}
 export function setBuckyOpen(open:boolean):void{
  if(snapshot.open===open)return;
  const transient=['listening','speaking','processing'].includes(snapshot.phase);

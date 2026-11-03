@@ -321,3 +321,78 @@ export function prepareSpeechText(answer: string, facts: { label: string; value:
   text = sentenceEnd > 80 ? cut.slice(0, sentenceEnd + 1) : `${cut.trim()}…`;
   return text;
 }
+
+/** Start capture only after completed speech and a short quiet gap; cancellation invalidates the queued callback. */
+export function queueAfterSpeech(isCurrent:()=>boolean,run:()=>void,schedule:(callback:()=>void,delay:number)=>unknown){
+ if(!isCurrent())return;
+ schedule(()=>{if(isCurrent())run();},250);
+}
+
+/* --- Echo prevention & turn-taking (Phase A hardening) --- */
+
+function normalizeSpeech(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * True when a recognised transcript is very likely Bucky's own spoken
+ * output leaking back through the speakers. Recognition is paused while
+ * Bucky speaks, so this is a second line of defence: a transcript that
+ * substantially overlaps the last spoken text must never be processed
+ * as a new user turn.
+ */
+export function isEchoOfSpeech(transcript: string, lastSpoken: string): boolean {
+  const heard = normalizeSpeech(transcript);
+  const spoken = normalizeSpeech(lastSpoken);
+  if (!heard || !spoken) return false;
+  if (heard === spoken) return true;
+  if (spoken.includes(heard) && heard.length >= 12) return true;
+  if (heard.includes(spoken) && spoken.length >= 12) return true;
+  const heardWords = new Set(heard.split(" "));
+  const spokenWords = spoken.split(" ").filter(Boolean);
+  if (spokenWords.length < 4 || heardWords.size < 3) return false;
+  const overlap = spokenWords.filter((w) => heardWords.has(w)).length / spokenWords.length;
+  return overlap >= 0.85 && heard.length >= 12;
+}
+
+/**
+ * Barge-in decision. Full-duplex interruption is NOT claimed: the Web
+ * Speech API gives no reliable echo-cancelled stream while synthesis is
+ * playing, so Bucketa only interrupts when the browser still delivered a
+ * confident final transcript that is not Bucky's own voice. In practice
+ * recognition is paused during speech, so interruption usually means the
+ * user taps Stop or finishes speaking first — documented limitation.
+ */
+export function shouldInterruptSpeech(options: { transcript: string; lastSpoken: string; isFinal: boolean }): boolean {
+  if (!options.isFinal) return false;
+  if (options.transcript.trim().length < 3) return false;
+  return !isEchoOfSpeech(options.transcript, options.lastSpoken);
+}
+
+/** User-facing label for each voice phase (Listening/Thinking/Speaking/Error). */
+export function voicePhaseLabel(phase: BuckyVoicePhase, micPending = false): string {
+  if (micPending) return "Starting microphone";
+  switch (phase) {
+    case "listening": return "Listening";
+    case "processing": return "Thinking";
+    case "speaking": return "Speaking";
+    case "review": return "Review what I heard";
+    case "denied": return "Microphone blocked";
+    case "unsupported": return "Voice unavailable";
+    case "error": return "Voice error";
+    default: return "Ready";
+  }
+}
+
+/** Session cancellation/re-arm guard only; capture and playback remain in the shared panel. */
+export function createContinuousVoiceSession(schedule:(callback:()=>void,delay:number)=>number,clear:(id:number)=>void){
+ let active=false,generation=0,timer:number|undefined,silentRetries=0;
+ const stop=()=>{active=false;generation++;if(timer!==undefined)clear(timer);timer=undefined;};
+ const resume=(ready:()=>boolean,listen:()=>void)=>{
+  if(!active)return;
+  if(timer!==undefined)clear(timer);
+  const token=generation;
+  timer=schedule(()=>{timer=undefined;if(active&&generation===token&&ready())listen();},250);
+ };
+ return{start(){stop();active=true;silentRetries=0;},stop,isActive:()=>active,resume,heard(){silentRetries=0;},silentEnd(ready:()=>boolean,listen:()=>void){if(!active)return false;if(++silentRetries>2){stop();return false;}resume(ready,listen);return true;}};
+}

@@ -82,10 +82,18 @@ export interface BuckyAnalysis {
   proposals: BuckyProposal[];
   duplicateGroups: { description: string; date: string; amountMinor: number; currency: string; count: number }[];
   lowStock: { productId: string; name: string; stock: number }[];
+  /** Best-selling products from completed POS sale lines (internal only). */
+  bestSellers: { productId: string; name: string; quantity: number; revenueMinor: number; currency: string }[];
+  /** Earned totals keyed by YYYY-MM-DD then currency (internal only). */
+  earnedByDate: Record<string, { currency: string; incomeMinor: number; posRevenueMinor: number }[]>;
   /** Recorded salary/bonus/advance payments (expenses linked to an
    * employee by relatedId or by the name in the payment description).
    * Internal analysis data only — never sent to a model. */
   ambiguousEmployeeNames?: string[];
+  /** Savings goals of THIS profile only, with computed progress. This is
+   * the bounded, aggregated goal context a model may see: names, target,
+   * saved and remaining amounts per goal currency — never raw records. */
+  savingsGoals: { name: string; currency: string; targetMinor: number; savedMinor: number; remainingMinor: number }[];
   compensationPayments: { employeeName: string; currency: string; amountMinor: number; date: string; type: CompensationType }[];
   limitations: string[];
   hasAnyData: boolean;
@@ -202,8 +210,8 @@ export function analyzeBuckyFinances(input: {
         severity: c.netCashFlowMinor < 0 ? "attention" : "info",
         title: `${c.currency} cash flow`,
         detail: c.netCashFlowMinor < 0
-          ? "Recorded expenses exceed recorded income in this currency."
-          : "Recorded income covers recorded expenses in this currency.",
+          ? "Recorded expenses exceed recorded income."
+          : "Recorded income covers recorded expenses.",
         currency: c.currency,
         evidence: [
           { label: "Income", value: money(c.incomeMinor, c.currency) },
@@ -342,9 +350,19 @@ export function analyzeBuckyFinances(input: {
     });
   }
 
+  const savingsGoals: BuckyAnalysis["savingsGoals"] = [];
   for (const bucket of buckets) {
     const progress = bucketGoalProgress(transactions, bucket);
     if (!progress) continue;
+    if (bucket.kind === "savings") {
+      savingsGoals.push({
+        name: bucket.name,
+        currency: bucket.currency,
+        targetMinor: bucket.targetMinor ?? 0,
+        savedMinor: progress.savedMinor,
+        remainingMinor: Math.max(0, (bucket.targetMinor ?? 0) - progress.savedMinor),
+      });
+    }
     insights.push({
       id: `savings-${bucket.id}`,
       kind: "savings",
@@ -354,7 +372,7 @@ export function analyzeBuckyFinances(input: {
         ? `Goal exceeded based on records assigned to this bucket — ${money(progress.overTargetMinor, bucket.currency)} above the target.`
         : progress.percent >= 100
           ? "Goal reached based on records assigned to this bucket."
-          : "Progress from records assigned to this bucket, in its own currency only.",
+          : "Progress from records assigned to this goal.",
       currency: bucket.currency,
       evidence: [
         { label: "Saved", value: money(progress.savedMinor, bucket.currency) },
@@ -408,6 +426,31 @@ export function analyzeBuckyFinances(input: {
     });
   }
 
+  // Best sellers + per-date earnings from real sale lines / records only.
+  const sellerMap = new Map<string, BuckyAnalysis["bestSellers"][number]>();
+  for (const sale of sales) {
+    for (const item of sale.items) {
+      const key = `${item.productId}|${sale.currency}`;
+      const entry = sellerMap.get(key) ?? { productId: item.productId, name: item.name, quantity: 0, revenueMinor: 0, currency: sale.currency };
+      entry.quantity += item.quantity;
+      entry.revenueMinor += item.lineTotalMinor;
+      sellerMap.set(key, entry);
+    }
+  }
+  const bestSellers = [...sellerMap.values()].sort((a, b) => b.quantity - a.quantity || b.revenueMinor - a.revenueMinor).slice(0, 5);
+  const earnedMap = new Map<string, Map<string, { currency: string; incomeMinor: number; posRevenueMinor: number }>>();
+  const earnedEntry = (date: string, currency: string) => {
+    const byCurrency = earnedMap.get(date) ?? new Map();
+    earnedMap.set(date, byCurrency);
+    const entry = byCurrency.get(currency) ?? { currency, incomeMinor: 0, posRevenueMinor: 0 };
+    byCurrency.set(currency, entry);
+    return entry;
+  };
+  for (const t of transactions) if (t.type === "income") earnedEntry(t.date.slice(0, 10), t.currency).incomeMinor += t.amountMinor;
+  for (const s of sales) earnedEntry(s.createdAt.slice(0, 10), s.currency).posRevenueMinor += s.totalMinor;
+  const earnedByDate: BuckyAnalysis["earnedByDate"] = {};
+  for (const [date, byCurrency] of earnedMap) earnedByDate[date] = [...byCurrency.values()].sort((a, b) => a.currency.localeCompare(b.currency));
+
   return {
     profileId: profile.id,
     profileName: profile.name,
@@ -418,6 +461,9 @@ export function analyzeBuckyFinances(input: {
     proposals,
     duplicateGroups,
     lowStock,
+    savingsGoals,
+    bestSellers,
+    earnedByDate,
     compensationPayments,
     ambiguousEmployeeNames: [...new Set(employees.map(e => e.name.trim().toLowerCase()))].filter(name => employees.filter(e => e.name.trim().toLowerCase() === name).length > 1),
     limitations,
@@ -445,7 +491,22 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
   }
   if (/salary rate|configured rate|agreed rate|tax|deduction|amount owed|payroll calculation/.test(q)) return insufficient('I can report recorded employee payments, not payroll calculations or amounts owed. Review configured rates and payment history in Employees.');
   if (/\b(profit|net income|tubo|kita|kinita)\b/.test(q)) return insufficient('I can report recorded income, expenses, cash flow, and POS revenue. These records do not establish profit or a bank balance.');
-  if (/\b(best|top|most|highest)\b.*\b(products?|sold|sales?)\b|\bproducts?\b.*\b(best|sold most)\b/.test(q)) return insufficient('I can report completed POS revenue and low stock, but I cannot reliably rank product performance yet.');
+  if (/\b(best|top|most|highest)\b.*\b(products?|sold|sales?|selling)\b|\bproducts?\b.*\b(best|sold most)\b|best-selling/.test(q)) {
+    if (!analysis.bestSellers.length) return insufficient('No completed POS sales are recorded for this profile yet, so I cannot rank products.');
+    return { answer: `Best-selling products for ${analysis.profileName} from completed POS sales (ranked by units sold): ${analysis.bestSellers.map((s) => `${s.name} — ${s.quantity} sold`).join("; ")}. Revenue is shown per product; currencies are never combined.`, facts: analysis.bestSellers.map((s) => ({ label: s.name, value: `${s.quantity} sold · ${money(s.revenueMinor, s.currency)}` })), proposalIds: [], insufficientData: false };
+  }
+  // Earned today / yesterday: recorded income + POS revenue for that date only.
+  if (/\b(earn|earned|earnings|income|revenue|sales|benta)\b/.test(q) && /\b(today|yesterday|ngayon|kahapon)\b/.test(q) && !/expense|spent/.test(q)) {
+    const today = analysis.generatedAt.slice(0, 10);
+    const date = /\byesterday|kahapon\b/.test(q) ? new Date(Date.parse(`${today}T00:00:00.000Z`) - 86400000).toISOString().slice(0, 10) : today;
+    const rows = analysis.earnedByDate[date] ?? [];
+    if (!rows.length) return insufficient(`No recorded income or completed POS sales on ${date} for this profile yet.`);
+    return { answer: `${/\byesterday|kahapon\b/.test(q) ? "Yesterday" : "Today"} (${date}) for ${analysis.profileName}: recorded income plus POS revenue, kept separate so nothing is double-counted.`, facts: rows.flatMap((r) => [{ label: `Recorded income (${r.currency})`, value: money(r.incomeMinor, r.currency) }, { label: `POS revenue (${r.currency})`, value: money(r.posRevenueMinor, r.currency) }]), proposalIds: [], insufficientData: false };
+  }
+  // General / casual conversation: honest scope, no invented data.
+  if (/^(hi|hello|hey|good (morning|afternoon|evening)|how are you|thank(s| you)|who are you|what can you do)\b/.test(q)) {
+    return { answer: `Hello! I'm Bucky, your Bucketa assistant for ${analysis.profileName}. I can explain your recorded sales, expenses, savings, inventory and employees, and — with your confirmation — record income or expenses, add products or employees, adjust stock, create savings buckets, and queue items for the POS cart. Ask me something like "How much did we earn today?" or "Show my best-selling products."`, facts: [], proposalIds: [], insufficientData: false };
+  }
   if (/inventory.*(?:value|valuation)|(?:value|valuation).*inventory/.test(q)) return insufficient('I can report low stock, but inventory valuation is not supported by this answer path.');
   const totalIncome = /\b(income|earned|earnings)\b/.test(q);
   const totalExpense = /\b(expenses?|spent|spending)\b/.test(q) && !/why|increase|decrease|trend|category|categories|biggest|largest/.test(q);
@@ -640,6 +701,10 @@ export function buildBuckyModelSummary(analysis: BuckyAnalysis) {
     insightKinds: analysis.insights.map((i) => i.kind),
     duplicateGroupCount: analysis.duplicateGroups.length,
     lowStockCount: analysis.lowStock.length,
+    // Bounded goal context for the selected profile only (max 10 goals):
+    // names plus target/saved/remaining per goal currency. No raw records,
+    // no descriptions, no other profile's goals.
+    savingsGoals: (analysis.savingsGoals ?? []).slice(0, 10).map((g) => ({ ...g })),
     limitations: analysis.limitations,
   };
 }
