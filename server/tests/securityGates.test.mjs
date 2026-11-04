@@ -87,6 +87,7 @@ test("live scanner failure returns an error with no fabricated entries", async (
     assert.equal(live.status, 502);
     assert.equal(live.json.error, "meta_unavailable");
     assert.equal("entries" in live.json, false);
+    assert.equal("verifiedModel" in live.json, false);
     const evil = await post(base, "/api/extract", { imageBase64: PNG_B64, mediaType: "image/png", mode: "live", expectedCurrency: "USD" }, { Origin: "https://evil.example" });
     assert.equal(evil.status, 403);
     assert.equal(evil.json.error, "live_unauthorized");

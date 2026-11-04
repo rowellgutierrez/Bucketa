@@ -302,7 +302,7 @@ test("live advise with a fake Meta response returns validated meta-live advice",
       const { status, json } = await postAdvise(base, payload({ mode: "live" }));
       assert.equal(status, 200);
       assert.equal(json.source, "meta-live");
-      assert.equal(json.model, META_MODEL_ID);
+      assert.equal(json.model, null); // No upstream model metadata, so no attribution.
       // Evidence is server-computed, never the model's invented evidence.
       assert.ok(!json.evidence.some((e) => e.label === "model-made"));
       assert.ok(json.evidence.some((e) => e.value === "PHP 1000.00"));

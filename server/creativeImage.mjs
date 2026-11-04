@@ -1,4 +1,4 @@
-import { sendMetaEnvelope } from "./metaClient.mjs";
+import { readMetaResponseModel, sendMetaEnvelope } from "./metaClient.mjs";
 import { metaDiagnosticError } from "./metaDiagnostics.mjs";
 
 /**
@@ -61,6 +61,11 @@ export function validateCreativeEditRequest(payload) {
   if (!prompt || prompt.length > CREATIVE_MAX_PROMPT_CHARS) {
     throw new Error("invalid_prompt");
   }
+  if (payload.operation === "generate") {
+    if (payload.imageBase64 !== undefined || payload.mediaType !== undefined) throw new Error("invalid_image");
+    return { prompt, history: [], operation: "generate", mode: payload.mode === "live" ? "live" : "disabled" };
+  }
+  if (payload.operation !== undefined && payload.operation !== "edit") throw new Error("invalid_request");
   if (typeof payload.imageBase64 !== "string" || payload.imageBase64.length === 0) {
     throw new Error("invalid_image");
   }
@@ -100,7 +105,7 @@ export function buildCreativeImageRequest({ imageBase64, mediaType, prompt, hist
     body: {
       model: META_IMAGE_MODEL,
       stream: false,
-      input: [
+      input: imageBase64 === undefined ? prompt : [
         {
           type: "message",
           role: "user",
@@ -172,5 +177,5 @@ export async function sendCreativeImage(request, fetchImpl = fetch, options = {}
     timeoutMs: options.timeoutMs ?? 120_000,
     maxResponseBytes: options.maxResponseBytes ?? 15_000_000,
   });
-  return parseCreativeImageResponse(json);
+  return { ...parseCreativeImageResponse(json), verifiedModel: readMetaResponseModel(json) };
 }

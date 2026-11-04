@@ -1,7 +1,7 @@
 import {buildBuckyConversationSummary} from './buckyAgent.ts';
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BuckyApiError, requestBuckyAdvice, requestBuckyInterpret, type BuckyInterpretContext, type BuckyModelSummary } from "./buckyApi.ts";
+import { BuckyApiError, buckyModelLabel, requestBuckyAdvice, requestBuckyInterpret, type BuckyInterpretContext, type BuckyModelSummary } from "./buckyApi.ts";
 
 const summary: BuckyModelSummary = {
   profileName: "Sari Store",
@@ -45,6 +45,13 @@ async function withFetch(impl: typeof fetch, run: () => Promise<void>) {
     globalThis.fetch = original;
   }
 }
+
+test("model labels apply only to the current verified live response", () => {
+  assert.equal(buckyModelLabel({ source: "meta-live", model: "muse-spark-1.3" }), "Meta Muse Spark 1.3");
+  assert.equal(buckyModelLabel({ source: "meta-live", model: "muse-spark-next" }), "muse-spark-next");
+  assert.equal(buckyModelLabel({ source: "deterministic-fallback", model: "muse-spark-1.3" }), undefined);
+  assert.equal(buckyModelLabel({ source: "meta-live", model: null }), undefined);
+});
 
 test("fallback advice posts only the aggregated summary and returns labelled source", async () => {
   let seenBody = "";

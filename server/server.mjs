@@ -19,7 +19,7 @@ import {
   validateInterpretRequest,
   validateModelInterpretation,
 } from "./buckyInterpret.mjs";
-import { buildCreativeImageRequest, creativeImageStatus, META_IMAGE_MODEL, sendCreativeImage, validateCreativeEditRequest } from "./creativeImage.mjs";
+import { buildCreativeImageRequest, creativeImageStatus, sendCreativeImage, validateCreativeEditRequest } from "./creativeImage.mjs";
 import { isValidCurrencyCode } from "./money.mjs";
 import { validateExtraction } from "./validateExtraction.mjs";
 import {
@@ -108,12 +108,13 @@ async function handleExtract(req, res, { config, fetchImpl }) {
     recordType,
     apiKey: getModelApiKey(),
   });
-  const raw = await sendToMeta(request, fetchImpl);
+  const { extraction: raw, verifiedModel } = await sendToMeta(request, fetchImpl, { includeModel: true });
   const result = validateExtraction(raw, expectedCurrency);
   sendJson(res, 200, {
     mode: "live",
     recordType,
     ...result,
+    verifiedModel,
   });
   return result.entries.length;
 }
@@ -161,11 +162,11 @@ async function handleBuckyAdvise(req, res, { config, fetchImpl }) {
       history: validated.history,
       apiKey: getModelApiKey(),
     });
-    const raw = await sendMetaAdvice(request, fetchImpl);
+    const { advice: raw, model } = await sendMetaAdvice(request, fetchImpl);
     const advice = validateModelAdvice(raw, validated.summary);
     sendJson(res, 200, {
       source: "meta-live",
-      model: META_MODEL_ID,
+      model,
       answer: advice.answer,
       explanation: advice.explanation,
       evidence,
@@ -300,9 +301,12 @@ async function handleCreativeEdit(req, res, { config, fetchImpl }) {
   } catch {
     throw errors.invalidRequest();
   }
-  const imageBuffer = decodeBase64Image(payload.imageBase64);
-  if (!imageBuffer) throw errors.unsupportedImage();
-  const { mediaType } = validateImageBuffer(imageBuffer, payload.mediaType);
+  let mediaType;
+  if (validated.operation !== "generate") {
+    const imageBuffer = decodeBase64Image(payload.imageBase64);
+    if (!imageBuffer) throw errors.unsupportedImage();
+    ({ mediaType } = validateImageBuffer(imageBuffer, payload.mediaType));
+  }
 
   if (validated.mode !== "live") {
     throw errors.imageEditingUnverified();
@@ -317,7 +321,7 @@ async function handleCreativeEdit(req, res, { config, fetchImpl }) {
   });
   const image = await sendCreativeImage(request, fetchImpl);
   sendJson(res, 200, {
-    model: META_IMAGE_MODEL,
+    verifiedModel: image.verifiedModel,
     imageDataUrl: `data:${image.mediaType};base64,${image.imageBase64}`,
   });
 }

@@ -69,8 +69,14 @@ export interface ExtractionTotals {
   skippedEntries: number;
 }
 
+export function scannerModelLabel(model: unknown): string | undefined {
+  if (typeof model !== "string" || !/^[a-zA-Z0-9._:/-]{1,100}$/.test(model)) return undefined;
+  return model === "muse-spark-1.3" ? "Meta Muse Spark 1.3" : model;
+}
+
 export interface ExtractResponse {
   mode: "live";
+  verifiedModel?: string | null;
   recordType: ScannerRecordType;
   currency: string;
   /**

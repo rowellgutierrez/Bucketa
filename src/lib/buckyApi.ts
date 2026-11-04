@@ -82,6 +82,11 @@ function isAdviceResponse(payload: unknown): payload is BuckyAdviceResponse {
  * (ENABLE_LIVE_META + server key + loopback origin). No token is ever
  * requested from the user or sent by the browser.
  */
+export function buckyModelLabel({ source, model }: Pick<BuckyAdviceResponse, "source" | "model">): string | undefined {
+  if (source !== "meta-live" || !model || !/^[a-zA-Z0-9._:/-]{1,100}$/.test(model)) return undefined;
+  return model === "muse-spark-1.3" ? "Meta Muse Spark 1.3" : model;
+}
+
 export async function requestBuckyAdvice(
   question: string,
   summary: BuckyModelSummary,

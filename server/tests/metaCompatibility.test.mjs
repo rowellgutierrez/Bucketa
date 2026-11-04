@@ -172,6 +172,23 @@ test("Bucky advice rejects bodies over 16,384 bytes with the safe oversized erro
   });
 });
 
+test("scanner attribution comes from the simulated provider envelope", async () => {
+  for (const [metadata, expected] of [
+    [{ model: "muse-spark-other" }, "muse-spark-other"],
+    [{}, null],
+    [{ model: "invalid model metadata" }, null],
+  ]) {
+    const result = await sendToMeta(
+      { url: "https://example.invalid", method: "POST", headers: {}, body: {} },
+      async () => ({ status: 200, text: async () => JSON.stringify({
+        ...metadata, output_text: JSON.stringify({ entries: [] }),
+      }) }),
+      { includeModel: true },
+    );
+    assert.deepEqual(result, { extraction: { entries: [] }, verifiedModel: expected });
+  }
+});
+
 test("scanner route keeps its larger streaming allowance (not the Bucky cap)", async () => {
   // A body well above the Bucky cap but below MAX_BODY_BYTES must reach
   // scanner validation (and fail there as an invalid request/image),

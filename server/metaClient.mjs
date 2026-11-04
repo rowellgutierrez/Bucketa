@@ -216,10 +216,15 @@ export async function sendMetaEnvelope(request, fetchImpl = fetch, options = {})
   }
 }
 
+export function readMetaResponseModel(json) {
+  return typeof json.model === "string" && /^[a-zA-Z0-9._:/-]{1,100}$/.test(json.model) ? json.model : null;
+}
+
 /** Send one extraction request (existing scanner behaviour, unchanged). */
 export async function sendToMeta(request, fetchImpl = fetch, options = {}) {
   const json = await sendMetaEnvelope(request, fetchImpl, options);
-  return parseMetaExtractionResponse(json);
+  const extraction = parseMetaExtractionResponse(json);
+  return options.includeModel ? { extraction, verifiedModel: readMetaResponseModel(json) } : extraction;
 }
 
 /**
@@ -278,7 +283,7 @@ export function parseMetaAdviceResponse(json) {
 /** Send one Bucky advice request and return the raw advice object. */
 export async function sendMetaAdvice(request, fetchImpl = fetch, options = {}) {
   const json = await sendMetaEnvelope(request, fetchImpl, options);
-  return parseMetaAdviceResponse(json);
+  return { advice: parseMetaAdviceResponse(json), model: readMetaResponseModel(json) };
 }
 
 /** Build the exact Responses API request for one Bucky interpretation. */

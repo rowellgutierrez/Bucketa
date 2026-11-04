@@ -2,541 +2,135 @@
 
 **Smart Buckets — Everything in One Bucket.**
 
-### AI-Powered Financial Intelligence, Business Management & Personal Finance
+Bucketa is a local-first workspace for small business operations and personal financial management. It brings bookkeeping, savings, sales, inventory, and employee payments together, with Bucky to help users understand their records and prepare supported actions.
 
-Bucketa is a local-first financial management platform designed to help small business owners, entrepreneurs, and individuals manage their finances and daily operations through one intelligent workspace.
+Built for the **Meta Global AI Developer Hackathon**, in the **Build for Your World** track.
 
-From tracking income and expenses to managing inventory, recording sales, organizing employees, and monitoring savings, Bucketa brings essential financial workflows together.
+## Real Meta AI integration
 
-At the center of the platform is **Bucky Financial Intelligence**, an AI assistant that helps users analyze their records and perform supported actions through natural-language text and voice instructions.
+| Feature | Configured Meta model | Model ID | Purpose |
+| --- | --- | --- | --- |
+| Bucky Financial Intelligence | Meta Muse Spark 1.3 | `muse-spark-1.3` | Live conversation and eligible financial explanations |
+| Bucky Record Scanner | Meta Muse Spark 1.3 | `muse-spark-1.3` | Structured extraction from receipts and other supported financial documents |
+| Creative Studio | Meta Muse Image 1.0 | `muse-image-1.0` | Generate images from text and edit existing images |
 
----
+The React frontend calls Bucketa’s local Node.js backend, which authenticates to the [Meta Responses API](https://dev.meta.ai/docs/protocols/responses) and validates the response before returning it to the browser. The key stays on the server. A result displays a model name when the successful response includes a verified model identifier from Meta. A configured-model label describes what Bucketa requests.
 
-## The Problem
+Bucketa computes exact financial totals locally and uses local rules for supported actions and confirmations. Eligible live explanations can use a scoped financial summary. Voice capture and playback depend on browser speech support. When live conversation is unavailable, Bucky can return a labeled deterministic response. Scanner and Creative Studio report live failures. Simulated provider responses are used for optional automated testing.
 
-Many small businesses still depend on notebooks, handwritten records, receipts, spreadsheets, and disconnected applications to manage daily financial activities.
+## Key features
 
-Business owners spend valuable time recording transactions, checking inventory, calculating expenses, and organizing financial information.
+- **Business and personal profiles:** Keep records separate by profile and currency.
+- **Transactions, budgets, and savings:** Record income and expenses, organize money into buckets, and track savings goals.
+- **Inventory and POS:** Manage products, prices, and stock. Record sales and review receipts.
+- **Employees:** Configure compensation and review salary and payment history.
+- **Financial summaries:** Explore recorded activity through dashboard charts, date filters, and currency-aware summaries.
+- **Bucky Financial Intelligence:** Ask questions by text or voice in supported browsers. Review and confirm supported record changes before saving.
+- **Record Scanner and Creative Studio:** Extract editable financial entries from images, or generate, edit, and download images.
 
-Individuals face similar challenges when tracking personal spending, managing savings, and working toward financial goals.
+## Run locally from GitHub
 
-Bucketa addresses these challenges by combining financial management, business operations, and AI-powered assistance in one platform.
-
----
-
-## Meet Bucky Financial Intelligence
-
-### AI-Powered Financial Management & Actions
-
-Bucky Financial Intelligence is Bucketa's intelligent assistant, designed to help users manage business operations and personal finances through natural-language conversations, financial analysis, and actionable commands.
-
-Bucky connects financial intelligence with practical application workflows, enabling users to request supported operations directly through text or voice.
-
-### Intelligent Actions Across Bucketa
-
-**Employee Management**
-
-> Add Michael Anzures to Harbor Mini Market with a monthly salary of $1,500.
-
-Bucky can help prepare employee information, salary details, and supported employee-management operations.
-
-**Inventory Management**
-
-> Add 50 bottles of mineral water to Harbor Mini Market's inventory at $1.50 each.
-
-Bucky can help prepare product information, quantities, prices, and supported inventory operations.
-
-**Financial Recordkeeping**
-
-> Record a $250 electricity expense for Corner Café today.
-
-Bucky can interpret financial instructions and prepare transactions under the appropriate business profile.
-
-**Savings and Budget Management**
-
-> Add $100 to my vacation savings goal.
-
-Bucky can assist with supported savings and bucket operations.
-
-**Financial Analysis and Insights**
-
-> Analyze Harbor Mini Market's sales, expenses, and net cash flow for October 2026.
-
-Bucky can analyze recorded financial data and provide understandable summaries and insights.
-
-### From Instructions to Actions
-
-Bucky is designed to understand user intent, identify the relevant business or personal profile, and prepare supported operations within Bucketa.
-
-Actions that create or modify financial records follow confirmation-based workflows, allowing users to review details before saving changes.
-
-Bucky also provides contextual financial summaries, insights, and natural-language explanations grounded in available records.
-
-*Supported actions depend on the implemented workflow. Some instructions may require clarification, confirmation, or manual completion.*
-
----
-
-## Key Features
-
-### Business Management
-
-Create and manage separate business profiles with their own financial records, currencies, transactions, and operational information.
-
-### Personal Finance
-
-Track personal income, expenses, savings goals, and financial progress.
-
-### Buckets
-
-Organize money into Savings, Budget, and Allocated buckets.
-
-### Transactions
-
-Record income, expenses, and supported transfers while maintaining a history of financial activity.
-
-### Inventory Management
-
-Manage product records, prices, stock quantities, and inventory status.
-
-### Sales & Point of Sale
-
-Record sales, manage shopping carts, calculate payments and change, and maintain receipts and sales history.
-
-### Employee Management
-
-Organize employee information and supported salary and payment records.
-
-### Bucky Record Scanner
-
-Use Meta AI to extract financial information from receipts, handwritten sales records, and other supported financial documents.
-
-The workflow includes image capture or upload, AI extraction, editable review, uncertainty handling, total reconciliation, and user confirmation before saving.
-
-**Production scanning uses live Meta AI. No fictional mock extraction fallback is provided.**
-
-### Creative Studio
-
-Generate or edit images using Meta AI, with separate camera and image-upload workflows.
-
-### Financial Intelligence
-
-Ask questions about recorded financial information, review summaries, and explore business or personal financial performance.
-
----
-
-## Built with Meta AI
-
-Bucketa integrates Meta AI models through a Node.js backend.
-
-| Meta Model       | Purpose                      |
-| ---------------- | ---------------------------- |
-| `muse-spark-1.3` | Bucky Financial Intelligence |
-| `muse-spark-1.3` | Bucky Record Scanner         |
-| `muse-image-1.0` | Creative Studio              |
-
-### AI Workflow
-
-1. The user submits a question, instruction, or document.
-2. Bucketa sends the request to its backend.
-3. The backend communicates with the appropriate Meta AI model.
-4. The response is validated and presented to the user.
-5. Supported record-changing actions require the applicable review and confirmation.
-
-API credentials remain server-side.
-
-AI extraction failures do not silently produce fictional financial records.
-
----
-
-## Technology Stack
-
-| Component      | Technology                 |
-| -------------- | -------------------------- |
-| Frontend       | React 19, TypeScript       |
-| Build Tool     | Vite                       |
-| Backend        | Node.js                    |
-| Local Database | IndexedDB                  |
-| AI Integration | Meta Model API             |
-| User Interface | Responsive web application |
-
-Bucketa stores financial records locally in the browser.
-
-Records are not automatically synchronized across different browsers or devices.
-
----
-
-## Judge Demo Workspace
-
-Bucketa includes a fictional USD demonstration workspace designed to help judges explore the platform without manually creating financial records.
-
-### Available Demo Profiles
-
-| Profile            | Type                       | Currency |
-| ------------------ | -------------------------- | -------- |
-| Harbor Mini Market | Retail business            | USD      |
-| Corner Café        | Food and beverage business | USD      |
-| Alex Morgan        | Personal finance           | USD      |
-
-### Demo Dataset
-
-**Harbor Mini Market**
-
-- 52 financial transactions
-- 72 sales records
-- Income, expenses, salaries, rent, utilities, and other business activity
-
-**Corner Café**
-
-- 52 financial transactions
-- 60 sales records
-- Business income, expenses, and sales activity
-
-**Alex Morgan**
-
-- 33 personal financial transactions
-- Salary and freelance income
-- Personal expenses
-- Savings deposits and withdrawals
-
-The demonstration records span **September through November 2026**.
-
-All three demo profiles use USD.
-
-### Loading the Demo
-
-1. Open Bucketa.
-2. Navigate to Settings.
-3. Select **Load fictional USD judge demo**.
-4. Select Harbor Mini Market, Corner Café, or Alex Morgan.
-5. Explore the available records and financial summaries.
-
-Demo initialization is designed to add missing demo records without duplicating existing records or overwriting unrelated user data.
-
-**All demonstration financial records are fictional.**
-
----
-
-## Installation & Local Setup
-
-### Prerequisites
-
-- Node.js and npm
-- A modern web browser
-- Internet connection for Meta AI requests
-- A valid Meta Model API key with access to the required models
-
-### 1. Clone the Repository
+Use **Node.js 22.12 or newer** with npm and a modern browser. Live features require internet access and your own authorized Meta Model API credentials.
 
 ```bash
 git clone https://github.com/rowellgutierrez/Bucketa.git
 cd Bucketa
+npm ci
 ```
 
-### 2. Install Dependencies
+### Configure live Meta AI
 
-```bash
-npm install
-```
+1. Create a key in your Meta Model API dashboard and check your account or team’s access to both models. Live requests may consume credits or incur charges and are subject to provider rate limits. See [Meta authentication](https://dev.meta.ai/docs/authentication) and [pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits).
+2. Create a project-root `.env` using `.env.example` as a reference. Replace the placeholder only in your local file.
 
-### 3. Configure Meta AI
+   ```dotenv
+   MODEL_API_KEY=REPLACE_WITH_YOUR_OWN_META_API_KEY
+   ENABLE_LIVE_META=1
+   ```
 
-Create a local `.env` file using `.env.example` as the configuration reference.
+3. Keep the key in the ignored local `.env` or the backend process environment. Keep it out of browser fields, `VITE_*` variables, source code, Git, screenshots, and logs. Live authorization uses the server flag, server-side key, and loopback request checks. No separate live-test token is required.
 
-The verified local setup includes:
+### Start the backend and frontend
 
-```dotenv
-MODEL_API_KEY=YOUR_META_API_KEY
-ENABLE_LIVE_META=1
-```
-
-Replace the placeholder with your own Meta API key.
-
-Check `.env.example` for additional configuration options.
-
-**Never publish your actual API key or commit your `.env` file.**
-
-### 4. Start the Backend
-
-Open a terminal:
+Run these in separate terminals from the project root.
 
 ```bash
 npm run server
 ```
 
-The backend normally runs at:
-
-`http://127.0.0.1:8787`
-
-### 5. Start the Frontend
-
-Open another terminal:
-
 ```bash
 npm run dev
 ```
 
-Open the URL shown by Vite, typically:
+Open the local URL printed by Vite, typically [http://localhost:5173](http://localhost:5173). Keep the default backend port `8787` because Vite proxies `/api` to `127.0.0.1:8787`. Use a loopback address for local testing.
 
-`http://localhost:5173`
-
-### 6. Verify Live Meta AI
-
-Open a third terminal:
+From another terminal, run:
 
 ```bash
 npm run health
 ```
 
-A correctly configured backend should report:
+Look for `"ok": true`, `"modelApiKeyConfigured": true`, and `"liveMeta": "enabled"`. This readiness check confirms local configuration. Account access and end-to-end inference are checked by a live request. Restart the backend after changing `.env`.
 
-```json
-{
-  "ok": true,
-  "modelApiKeyConfigured": true,
-  "liveMeta": "enabled",
-  "buckyAdvise": {
-    "defaultSource": "meta-live",
-    "liveModel": "muse-spark-1.3"
-  }
-}
-```
+## Live demo walkthrough for judges
 
-The health check verifies configuration readiness. A real Meta AI request is still required to verify end-to-end operation.
+### Prepare a fictional workspace
 
-If you change backend code or environment configuration, restart the backend before testing again.
+In **Settings → Local demonstration workspace**, choose **Load fictional USD judge demo**. It adds missing demo records for **Harbor Mini Market**, **Corner Café**, and **Alex Morgan** without overwriting existing records. Alternatively, create a fictional business or personal profile, choose its currency, and add sample records manually. A separate browser profile keeps the walkthrough apart from your usual data.
 
----
+### 1. Bucky Financial Intelligence
 
-## How to Test Bucketa
+1. Open Bucky and ask, “Explain in two short sentences why a small café should separate personal and business bookkeeping.”
+2. Look for **Meta Muse Spark 1.3** on the assistant message when the live response includes that model ID. A labeled deterministic response indicates that the live answer was unavailable.
+3. Ask for Harbor Mini Market’s recorded income and expenses in USD to explore the local financial calculations. To see the confirmation safeguard, ask Bucky to record a $25 electricity expense under Corner Café. Review the preview, then cancel to leave the records unchanged.
 
-The following walkthrough is intended for hackathon judges and reviewers.
+### 2. Bucky Record Scanner
 
-### Test 1 — Explore the USD Demo Workspace
+1. Select a profile and record type. Upload or photograph a readable fictional receipt in the profile’s currency.
+2. Confirm sending the image for a live scan. Review the editable entries, flagged fields, and totals. A successful result with matching provider metadata shows **Meta Muse Spark 1.3**.
+3. Stop at review for a demonstration without writes. Saving requires separate confirmation.
 
-1. Open Settings.
-2. Select **Load fictional USD judge demo**.
-3. Select Harbor Mini Market.
-4. Review the Home dashboard, transactions, and financial summaries.
-5. Switch to Corner Café and Alex Morgan to explore the other profiles.
+### 3. Creative Studio
 
-**Expected:** Financial information is displayed in USD using the fictional demo records.
+1. Leave the upload empty and enter a prompt such as “A studio product photograph of a plain kraft coffee bag on a cream background.”
+2. Click **Generate** once, inspect the preview, and try **Download Image**. A successful result with matching provider metadata shows **Meta Muse Image 1.0**.
+3. To demonstrate editing, upload a fictional product photo or give a follow-up instruction for the generated image. An edit is a separate live request.
 
-### Test 2 — Bucky Financial Analysis
+### Explore the rest of Bucketa
 
-Open Bucky Financial Intelligence and enter:
+Open **Home** for financial summaries and date filters, **Transactions** for activity history, and **Personal Finance** for savings progress. In a business profile, review stock in **Products & Inventory**, compensation and payments in **Employees**, and receipts in **POS / Sales**. Completing a sample sale changes the local demo records and stock.
 
-> Analyze Harbor Mini Market's recorded income, expenses, and net cash flow for October 2026 in USD. Do not create or modify any records.
+## Demo Data and Privacy Disclaimer
 
-**Expected:** Bucky provides a financial analysis based on available recorded data without changing any records.
+Sample names, employee salaries, dates, transaction histories, financial amounts, savings goals, and business records shown in the hackathon demo are fictional and illustrative. They do not represent actual employee records, salaries, or verified financial transactions. This disclaimer applies to the demonstration data. Information users independently enter may be real.
 
-### Test 3 — Employee Management Through Bucky
+Bucketa stores profiles and financial records in IndexedDB for the current browser profile and site origin. Records do not automatically sync across devices, and clearing site data can remove them. Live requests send the inputs needed for the selected feature to Meta through the local backend. These may include prompts, conversation context, scoped financial summaries, or images. Use fictional inputs during judging.
 
-Enter:
+## Security and limitations
 
-> Add Michael Anzures as an employee under Harbor Mini Market with a monthly salary of $1,500.
+The backend binds to loopback and checks the local request context. Health reports configuration status without revealing credentials. Live requests make one upstream attempt with no automatic retry. If a feature fails, check the backend connection, then your Meta model access, billing or credits, and rate limits.
 
-Verify whether Bucky recognizes the employee, business, and salary, prepares the supported action, and presents the required confirmation.
+Review AI results before using them. Bucketa is a hackathon prototype and does not replace professional accounting or financial advice.
 
-If the action is completed, check the Employees page for the resulting record.
-
-### Test 4 — Inventory Management Through Bucky
-
-Enter:
-
-> Add 50 bottles of mineral water to Harbor Mini Market's inventory at $1.50 each.
-
-Verify whether Bucky identifies the product, quantity, price, and business.
-
-If the supported action is confirmed and completed, check the Products or Inventory page for the resulting record.
-
-### Test 5 — Financial Recordkeeping Through Bucky
-
-Enter:
-
-> Record a $250 electricity expense for Corner Café today.
-
-Verify the proposed transaction details, including the correct business, expense type, amount, currency, and date.
-
-Confirm the action only if you intend to modify the local demo records.
-
-### Test 6 — Bucky Record Scanner
-
-1. Open Bucky Record Scanner.
-2. Select the relevant profile and record type.
-3. Upload an image or capture a photo of a financial record.
-4. Start the live AI scan.
-5. Review the extracted information.
-6. Correct any uncertain or incorrect fields.
-7. Review the calculated totals.
-8. Confirm before saving.
-
-**Expected:** Meta AI extracts information from the supplied document and presents editable records for review.
-
-For a non-destructive demonstration, stop before saving.
-
-### Test 7 — Inventory and Sales
-
-1. Open a business profile.
-2. Navigate to Products or Inventory.
-3. Review the available products.
-4. Open Sales or POS.
-5. Add an available product to the cart.
-6. Complete a sample sale.
-7. Review the receipt and sales history.
-8. Check the updated stock quantity.
-
-This test changes local demo records.
-
-### Test 8 — Personal Finance
-
-1. Select Alex Morgan.
-2. Open Personal Finance.
-3. Review income, expenses, and savings.
-4. Ask Bucky:
-
-> Summarize Alex Morgan's recorded personal income and expenses in USD. Do not modify any records.
-
-### Test 9 — Creative Studio
-
-1. Open Creative Studio.
-2. Select the available generation or editing workflow.
-3. Upload an image or use the camera if required.
-4. Enter a suitable instruction.
-5. Generate the result.
-6. Review the output.
-
-**Note:** Live Meta AI requests may consume API credits.
-
----
-
-## Automated Tests
-
-Run these commands from the project root.
-
-**Backend tests**
-
-```bash
-npm run test:server
-```
-
-**Data tests**
-
-```bash
-npm run test:data
-```
-
-**Application logic tests**
-
-```bash
-npm run test:lib
-```
-
-**TypeScript verification**
-
-```bash
-npx tsc --noEmit
-```
-
-**Production build**
-
-```bash
-npm run build
-```
-
-### Reported Test Results
-
-| Verification              | Result     |
-| ------------------------- | ---------- |
-| Backend                   | 116 passed |
-| Data                      | 23 passed  |
-| Library/Application Logic | 256 passed |
-| TypeScript                | Passed     |
-| Production Build          | Passed     |
-
-**395 automated tests passed in the reported baseline.**
-
-Additional targeted tests passed following the live-only Scanner and demo-workspace repairs.
-
-Automated tests do not replace manual testing of live Meta AI responses.
-
----
-
-## Troubleshooting
-
-### Live Meta AI Is Not Configured
-
-Check that:
-
-- The backend is running.
-- `MODEL_API_KEY` is configured.
-- `ENABLE_LIVE_META=1` is set.
-- The backend has been restarted after configuration changes.
-- `npm run health` reports `"liveMeta": "enabled"`.
-
-### Demo Records Are Missing
-
-Open Settings and select **Load fictional USD judge demo** again.
-
-The demo initialization process can repair missing demo records without duplicating existing entries.
-
-### Scanner Cannot Extract Records
-
-Verify the backend connection, Meta AI configuration, supported image format, and any error returned by the service.
-
-The production Scanner does not substitute fictional extraction results when live scanning fails.
-
-### Financial Records Are Missing on Another Device
-
-Bucketa uses IndexedDB. Financial records are local to the browser and are not automatically synchronized.
-
----
-
-## Privacy, Security & Limitations
-
-Bucketa is a hackathon prototype demonstrating AI-assisted financial management.
-
-- Financial records are stored locally in the browser.
-- Live AI requests are sent through the configured backend.
-- Meta API credentials are kept server-side.
-- Users review extracted records before saving.
-- Supported financial modifications require confirmation.
-- AI-generated information may contain errors and should be verified.
-- The judge demo uses fictional data.
-- Local records are not automatically backed up or synchronized.
-- Bucketa is not a substitute for professional accounting or financial advice.
-
----
-
-## Our Vision
-
-### One Intelligent Assistant. Multiple Financial Workflows. One Unified Platform.
-
-Bucketa envisions a future where business owners and individuals can manage everyday financial activities through natural-language instructions.
-
-Instead of navigating multiple disconnected tools, users should be able to ask about sales, record expenses, manage inventory, organize employees, track savings, and understand their financial performance in one place.
-
-**Our mission is to make financial intelligence more practical, accessible, and useful for everyday life.**
-
----
+For automated checks and a production build, run `npm test` and `npm run build`.
 
 ## About the Creator
 
-**Rowell Gutierrez** is an educator, former Academic Coordinator, and small business owner from the Philippines who began exploring AI engineering and software development just **two months before the hackathon**.
+**Rowell Gutierrez** is the creator of Bucketa, a developer from the Philippines who began exploring AI engineering and software development just **two months before the Meta Global AI Developer Hackathon**.
 
-Despite having only two months of hands-on experience, he developed Bucketa to demonstrate how artificial intelligence can help solve real-world challenges in small business operations and personal financial management.
+Despite having only two months of hands-on experience, he built Bucketa to explore how artificial intelligence can help solve everyday challenges in business operations and personal financial management.
 
-His journey reflects a passion for learning, innovation, and building practical technology that makes everyday tasks easier and more accessible.
+### Why I Built Bucketa
 
-**Project Information**
+I created Bucketa because I wanted to make financial management simpler and more accessible. Many small businesses and individuals still struggle with manually recording transactions, tracking expenses, managing sales, and understanding their financial activity.
 
-**Project:** Bucketa
+My goal was to bring these essential tools together in one application and explore how AI could make everyday financial tasks easier, faster, and more manageable.
 
-**Tagline:** Smart Buckets — Everything in One Bucket.
+### Project Information
 
-**Track:** Build for Your World
-
-**Creator:** Rowell Gutierrez
-
----
-
-**Bucketa — Smart Buckets. Everything in One Bucket.**
+| | |
+| --- | --- |
+| **Project** | Bucketa |
+| **Tagline** | Smart Buckets — Everything in One Bucket. |
+| **Track** | Build for Your World |
+| **Creator** | Rowell Gutierrez |

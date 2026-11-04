@@ -38,6 +38,7 @@ export interface StudioTurn {
   prompt: string;
   /** Data URL of the genuine AI result, or null when no image was produced. */
   resultDataUrl: string | null;
+  verifiedModel?: string;
   status: "done" | "unavailable" | "error";
   message?: string;
 }
@@ -94,7 +95,7 @@ export interface CreativeStatus {
  * origin); the browser sends no token. Never retries automatically.
  * A placeholder is never returned as a generated image.
  */
-export async function requestCreativeEdit(payload: CreativeEditPayload, fetchImpl: typeof fetch = fetch): Promise<{ dataUrl: string }> {
+export async function requestCreativeEdit(payload: CreativeEditPayload | { operation: "generate"; prompt: string }, fetchImpl: typeof fetch = fetch): Promise<{ dataUrl: string; verifiedModel?: string }> {
   let response: Response;
   try {
     response = await fetchImpl("/api/creative/edit", {
@@ -103,7 +104,7 @@ export async function requestCreativeEdit(payload: CreativeEditPayload, fetchImp
       body: JSON.stringify({ ...payload, mode: "live" }),
     });
   } catch {
-    throw new Error("The Creative Studio server could not be reached. No image was generated and nothing was charged.");
+    throw new Error("Creative Studio did not receive a response. Check your connection before trying again.");
   }
   let body: unknown = null;
   try { body = await response.json(); } catch { body = null; }
@@ -112,12 +113,15 @@ export async function requestCreativeEdit(payload: CreativeEditPayload, fetchImp
     throw new Error(typeof record.message === "string" ? record.message : "AI image editing is not verified for this Meta account yet. No image was generated and nothing was charged.");
   }
   if (!response.ok) {
-    throw new Error(typeof record.message === "string" ? record.message : "The edit could not be completed. No image was generated.");
+    throw new Error(typeof record.message === "string" ? record.message : "The image request could not be completed.");
   }
   if (typeof record.imageDataUrl !== "string" || !record.imageDataUrl.startsWith("data:image/")) {
     throw new Error("The server returned no usable image, so nothing was shown as a result.");
   }
-  return { dataUrl: record.imageDataUrl };
+  const model = record.verifiedModel;
+  return typeof model === "string" && /^[a-zA-Z0-9._:/-]{1,100}$/.test(model)
+    ? { dataUrl: record.imageDataUrl, verifiedModel: model }
+    : { dataUrl: record.imageDataUrl };
 }
 
 export async function fetchCreativeStatus(fetchImpl: typeof fetch = fetch): Promise<CreativeStatus> {

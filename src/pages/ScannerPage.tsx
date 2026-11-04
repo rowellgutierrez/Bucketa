@@ -14,6 +14,7 @@ import {
   prepareScannerImage,
   requestExtraction,
   ScannerApiError,
+  scannerModelLabel,
   type ExtractResponse,
   type PreparedScannerImage,
   type ScannerExtractionMode,
@@ -1269,7 +1270,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
           eyebrow="BUSINESS TOOLS"
           title="Bucky Record Scanner"
           description="Upload a record, review every entry, then confirm what gets saved."
-          actions={<span className="currency-badge">{liveAvailable ? "Live AI Scan" : "Live AI not configured"}</span>}
+          actions={<span className="currency-badge">{liveAvailable ? "Configured model: Meta Muse Spark 1.3" : "Meta Muse Spark 1.3 not configured"}</span>}
         />
       )}
 
@@ -1382,7 +1383,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
 
           <div className="scanner-mode-panel">
             <p className="field-hint">
-              <strong>Live AI Scan</strong> sends the selected image to the real Meta model through the secured local backend. Review, correct, or remove every entry, then confirm before saving. The scan uses your selected profile/bucket currency ({expectedCurrency}).
+              <strong>Live AI Scan</strong> requests Meta Muse Spark 1.3 through the secured local backend. Review, correct, or remove every entry, then confirm before saving. The scan uses your selected profile/bucket currency ({expectedCurrency}).
             </p>
             {!liveAvailable && healthStatus === "ready" && (
               <p className="alert-error" role="alert">Live AI is unavailable: check the server configuration above. Uploading an image alone never creates records.</p>
@@ -1540,6 +1541,9 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
             {"Live AI scan complete"} for {activeProfile?.name ?? "the selected profile"} in{" "}
             {result.currency}. Nothing is saved until you confirm the final save below.
           </p>
+          {result.mode === "live" && scannerModelLabel(result.verifiedModel) && (
+            <p className="field-hint">Model used: {scannerModelLabel(result.verifiedModel)}</p>
+          )}
           <p className="scanner-warning" role="note">
             <strong>Before you save:</strong> check every entry carefully, or
             remove entries you do not want to keep. After saving, you can

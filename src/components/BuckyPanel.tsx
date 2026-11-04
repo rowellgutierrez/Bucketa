@@ -32,6 +32,7 @@ import {
 import {
   BuckyApiError,
   requestBuckyAdvice,
+  buckyModelLabel,
   requestBuckyInterpret,
 } from "../lib/buckyApi.ts";
 import {
@@ -90,6 +91,7 @@ interface Props {
   active?: boolean;
   compact?: boolean;
   inlineVoice?: boolean;
+  homeVoiceStartRef?: { current: (() => void) | null };
   profiles: Profile[];
   buckets: Bucket[];
   transactions: Transaction[];
@@ -151,7 +153,7 @@ function goToRoute(route: string) {
  * saved only after explicit user confirmation through the app's
  * commit-confirmed data function.
  */
-export default function BuckyPanel({ profiles, buckets, transactions, products, sales, employees = [], preferredProfileId, onRecordsChanged, onPendingActionChange, onNavigateAway, onScanRequest, conversationRequest, active = true, compact = false, inlineVoice = false, navigationKey }: Props) {
+export default function BuckyPanel({ profiles, buckets, transactions, products, sales, employees = [], preferredProfileId, onRecordsChanged, onPendingActionChange, onNavigateAway, onScanRequest, conversationRequest, active = true, compact = false, inlineVoice = false, navigationKey, homeVoiceStartRef }: Props) {
   const activeRef=useRef(active);activeRef.current=active;
   const presentation = useSyncExternalStore(subscribeBuckyPresentation,getBuckyPresentation,getBuckyPresentation);
   const [interactionPhase,setInteractionPhase] = useState<BuckyPhase>("idle");
@@ -161,10 +163,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const question = useSyncExternalStore(subscribeBuckyDraft,getBuckyDraft,getBuckyDraft);
   const setQuestion = setBuckyDraft;
   const [, setLastQuestion] = useState("");
-  const [answer, setAnswer] = useState<BuckyAnswer | null>(null);
+  const [answer, setAnswer] = useState<(BuckyAnswer & { modelLabel?: string }) | null>(null);
   // Single conversation thread: user + Bucky messages in order. Action
   // previews stay as live cards below the thread (Confirm/Cancel intact).
-  const [thread, setThread] = useState<{ id: number; role: "user" | "bucky"; text: string; profileId?: string; profileName?: string; facts: { label: string; value: string }[]; proposalIds: string[] }[]>([]);
+  const [thread, setThread] = useState<{ id: number; role: "user" | "bucky"; text: string; profileId?: string; profileName?: string; modelLabel?: string; facts: { label: string; value: string }[]; proposalIds: string[] }[]>([]);
   const msgIdRef = useRef(0);
   const messageOwnerRef=useRef<Profile|null>(null);
   const submissionGate=useRef(createBuckySubmissionGate()).current;
@@ -173,9 +175,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const voiceMessages=inlineVoice?thread.filter(msg=>msg.id>voiceSessionStart):thread;
   const conversationScroll = useRef<HTMLDivElement>(null);
   const followLatest=useRef(true);
-  function pushMsg(role: "user" | "bucky", text: string, facts: { label: string; value: string }[] = [], proposalIds: string[] = []) {
+  function pushMsg(role: "user" | "bucky", text: string, facts: { label: string; value: string }[] = [], proposalIds: string[] = [], modelLabel?: string) {
     const id = ++msgIdRef.current;
-    setThread((prev) => [...prev.slice(-39), { id, role, text, facts, proposalIds, profileId: messageOwnerRef.current?.id, profileName: messageOwnerRef.current?.name }]);
+    setThread((prev) => [...prev.slice(-39), { id, role, text, facts, proposalIds, modelLabel, profileId: messageOwnerRef.current?.id, profileName: messageOwnerRef.current?.name }]);
   }
   // Every new Bucky answer joins the thread exactly once (object identity
   // guards StrictMode double-effects and re-renders).
@@ -183,7 +185,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   useEffect(() => {
     if (answer && answer !== lastAnswerRef.current) {
       lastAnswerRef.current = answer;
-      pushMsg("bucky", answer.answer, answer.facts, answer.proposalIds);
+      pushMsg("bucky", answer.answer, answer.facts, answer.proposalIds, answer.modelLabel);
     }
   }, [answer]);
   // Live Meta AI availability is discovered from the backend health
@@ -225,7 +227,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const recognitionStopRequestedRef = useRef(false);
   const recognitionErrorRef = useRef("");
   const recognitionRestartsRef = useRef(0);
-  const [pendingTranscript, setPendingTranscript] = useState("");
   const finalTranscriptRef = useRef("");
   // Trailing-silence auto-finish: every recognition result (interim or
   // final) stamps lastResultAtRef and (re)arms the timer; ~3s without a
@@ -460,7 +461,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       messageOwnerRef.current=null;pushMsg('user',q);const fallback=answerBuckyConversation();
       if(buckyAdviceMode(liveAvailability)==='live'){
         if(!adviceGuardRef.current.tryStart())return;setServerBusy(true);setServerNote('');
-        try{const response=await requestBuckyAdvice(q,buildBuckyConversationSummary(),{mode:'live',history:scopedBuckyHistory(thread,'')});setAnswer({answer:response.answer,facts:[],proposalIds:[],insufficientData:false});setServerNote(response.source==='meta-live'?'':'Live Meta AI was unavailable. This is a deterministic help response; no live answer was used.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(response.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
+        try{const response=await requestBuckyAdvice(q,buildBuckyConversationSummary(),{mode:'live',history:scopedBuckyHistory(thread,'')});setAnswer({answer:response.answer,modelLabel:buckyModelLabel(response),facts:[],proposalIds:[],insufficientData:false});setServerNote(response.source==='meta-live'?'':'Live Meta AI was unavailable. This is a deterministic help response; no live answer was used.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(response.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
         catch(error){setAnswer(fallback);setServerNote('Live Meta AI was unavailable. This is a deterministic help response; no live answer was used.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(fallback.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
         finally{adviceGuardRef.current.finish();setServerBusy(false);}
       }else{setAnswer(fallback);setServerNote('Deterministic help response. Live Meta AI is not configured on the server; no paid request was made.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(fallback.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
@@ -623,14 +624,14 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     // A labelled deterministic fallback is used only when live is not
     // configured or the live response fails validation — never
     // presented as a successful Meta AI response.
-    let displayAnswer: BuckyAnswer = next;
+    let displayAnswer: BuckyAnswer & { modelLabel?: string } = next;
     if (buckyAdviceMode(liveAvailability) === "live" && adviceGuardRef.current.tryStart()) {
       setServerBusy(true);
       try {
         const response = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis, q), { mode: "live", history: scopedBuckyHistory(thread, "") });
         if (response.source === "meta-live") {
           // Genuine live answer: no status/provenance line is shown.
-          displayAnswer = { answer: response.answer, facts: response.evidence, proposalIds: [], insufficientData: false };
+          displayAnswer = { answer: response.answer, modelLabel: buckyModelLabel(response), facts: response.evidence, proposalIds: [], insufficientData: false };
         } else {
           setServerNote("Live Meta AI was unavailable, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.");
         }
@@ -994,19 +995,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   /**
    * Natural voice flow: a cleanly finished transcript is interpreted
-   * automatically — no extra Run tap. The transcript stays visible
-   * ("Heard: …") so a mis-hearing can be corrected or retried, and
-   * interpretation still only ever *proposes*: every write needs the
-   * structured preview and an explicit Confirm.
+   * automatically and shown as a normal user message. Every write still
+   * needs the structured preview and an explicit Confirm.
    */
   function processTranscriptAutomatically(heard: string) {
-    setPendingTranscript(heard);
-    // The composer is never filled with the voice transcript: it would
-    // leave stale text behind after the message is sent. Only clear a
-    // composer copy that exactly matches what was just submitted (e.g.
-    // left over from a reviewed transcript); an unrelated typed draft
-    // the user is still writing is preserved untouched.
-    if (getBuckyDraft().trim() === heard.trim()) setQuestion("");
     setInterimTranscript("");
     setVoicePhase((p) => voiceTransition(p, "heard"));
     ask(heard, true);
@@ -1024,7 +1016,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
    */
   function settleTranscript(heard: string) {
     if (recognitionCancelledRef.current) {
-      setPendingTranscript("");
       setInterimTranscript("");
       return;
     }
@@ -1035,13 +1026,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         cancelled: false,
       })
     ) {
-      processTranscriptAutomatically(heard);
+      processTranscriptRef.current(heard);
       return;
     }
-    // Genuinely failed recognition: never run the uncertain transcript,
-    // never park it in a review step, and leave no stale composer text.
-    if (getBuckyDraft().trim() === heard.trim()) setQuestion("");
-    setPendingTranscript("");
+    // Failed recognition leaves the typed draft untouched.
     setInterimTranscript("");
     setVoicePhase("idle");
     if (!recognitionErrorRef.current) {
@@ -1049,17 +1037,27 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
   }
 
-  function startHomeVoice(){
-    if(hasPendingPreview||actionBusy||productBusy||appBusy||interpretBusy)return;
-    messageOwnerRef.current=null;continuousVoice.start();followLatest.current=true;cancelListening();stopSpeaking();setVoiceError('');setPendingTranscript('');setInterimTranscript('');setVoiceHistoryExpanded(true);setVoiceSessionStart(thread.at(-1)?.id??0);
+  function startHomeVoice(retry = false){
+    if (recognitionRef.current || hasPendingPreview || actionBusy || productBusy || appBusy || interpretBusy) return;
+    messageOwnerRef.current=null;continuousVoice.start();followLatest.current=true;cancelListening();stopSpeaking();setVoiceError('');setInterimTranscript('');setVoiceHistoryExpanded(true);
+    if (!retry) setVoiceSessionStart(msgIdRef.current);
     if(!recognitionSupported){continuousVoice.stop();setInteractionPhase('error');setVoicePhase('unsupported');setVoiceError("Voice input isn't supported in this browser. You can still type your question.");return;}
     // One-click reliability: start the microphone synchronously in this
     // activation instead of after a spoken greeting (the greeting delay
     // lost the browser's user-activation and caused first-click failure).
     // The greeting is shown as text; Bucky still speaks answers.
-    pushMsg("bucky", "Hi! How can I help you?");
+    if (!retry) pushMsg("bucky", "Hi! How can I help you?");
     startListening();
   }
+  useEffect(() => {
+    if (!homeVoiceStartRef) return;
+    homeVoiceStartRef.current = () => startHomeVoice();
+    return () => { homeVoiceStartRef.current = null; };
+  });
+
+  const processTranscriptRef = useRef(processTranscriptAutomatically);
+  processTranscriptRef.current = processTranscriptAutomatically;
+
   function stopHomeVoice(){continuousVoice.stop();cancelListening();stopSpeaking();setVoicePhase('idle');}
   function startListening() {
     if(micPending){cancelListening();return;}
@@ -1074,7 +1072,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     if(recognitionRef.current)return;
     setVoiceError("");
     setInterimTranscript("");
-    setPendingTranscript("");
     if (!recognitionSupported) {
       setInteractionPhase("error");
       setVoicePhase("unsupported");
@@ -1159,8 +1156,8 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       }
       const heard = finalTranscriptRef.current.trim();
       setVoicePhase("idle");
-      if (!recognitionErrorRef.current && !recognitionStopRequestedRef.current) {
-        // Unexpected end (browser time limit / long silence) with no
+      if (!heard && !recognitionErrorRef.current && !recognitionStopRequestedRef.current) {
+        // Unexpected end without a final transcript and with no
         // explicit user stop: restart a bounded number of times so a
         // long command can continue. canRestartRecognition also blocks
         // restarts after errors and denials, preventing loops.
@@ -1189,7 +1186,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       finalTranscriptRef.current = "";
       if (heard) {
         settleTranscript(heard);
-      } else if (inlineVoice && continuousVoice.isActive() && (!recognitionErrorRef.current || recognitionErrorRef.current==='no-speech')) {
+      } else if (continuousVoice.isActive() && (!recognitionErrorRef.current || recognitionErrorRef.current==='no-speech')) {
         setInterimTranscript('');setVoicePhase('idle');setVoiceError('');
         if(!continuousVoice.silentEnd(()=>canResumeVoiceRef.current(),()=>listenAfterGreetingRef.current())){setInteractionPhase('error');setVoicePhase('error');setVoiceError('No speech was detected after several attempts. Choose Retry to restart voice.');}
       } else if (!recognitionErrorRef.current) {
@@ -1206,17 +1203,12 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     try {
       recognition.start();
     } catch {
-      // A stale session can throw InvalidStateError on the first click;
-      // abort it and retry once synchronously before giving up.
-      try { recognition.abort(); } catch { /* ignore */ }
-      try {
-        recognition.start();
-      } catch {
-        continuousVoice.stop();recognitionRef.current=null;
-        setVoicePhase("error");
-        setMicPending(false);setInteractionPhase("error");
-        setVoiceError("Speech recognition couldn't start. Tap the microphone again, or type your question instead.");
-      }
+      continuousVoice.stop();
+      recognitionRef.current = null;
+      setVoicePhase("error");
+      setMicPending(false);
+      setInteractionPhase("error");
+      setVoiceError("Speech recognition couldn't start. Tap the microphone again, or type your question instead.");
     }
   }
 
@@ -1254,27 +1246,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
     recognitionRef.current = null;
     setInterimTranscript("");
-    setPendingTranscript("");
     setVoicePhase((p) => (p === "listening" || p === "processing" ? voiceTransition(p, "stop") : p));
-  }
-
-  /** Put an auto-processed transcript back in the input to fix a mis-hearing. */
-  function correctTranscript() {
-    stopSpeaking();
-    setQuestion(pendingTranscript);
-    setPendingTranscript("");
-    setVoiceError("");
-    setVoicePhase((p) => voiceTransition(p, "reset"));
-    document.getElementById("bucky-question")?.focus({preventScroll:true});
-  }
-
-  /** Throw the transcript away and listen again from scratch. */
-  function retryListening() {
-    if (hasPendingPreview) { setVoiceError("Confirm or cancel the preview before retrying."); return; }
-    if (question === pendingTranscript) setQuestion("");
-    setPendingTranscript("");
-    setVoiceError("");
-    startListening();
   }
 
   useEffect(() => {
@@ -1287,8 +1259,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   }, [active, thread.length, hasPendingPreview]);
 
   useEffect(() => {
-    if (pendingTranscript && question.trim() === pendingTranscript.trim()) setQuestion("");
-    continuousVoice.stop();cancelListening(); stopSpeaking(); setPendingTranscript(''); setInterimTranscript(''); setVoiceError(''); setVoicePhase('idle');
+    continuousVoice.stop();cancelListening(); stopSpeaking();  setInterimTranscript(''); setVoiceError(''); setVoicePhase('idle');
   }, [navigationKey]);
 
   const wasBlockedForVoice=useRef(false);
@@ -1299,7 +1270,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   },[hasPendingPreview,voicePhase]);
   const consumedRequest = useRef('');
   useEffect(() => {
-    if (!active) { continuousVoice.stop();cancelListening(); stopSpeaking(); setPendingTranscript(""); setInterimTranscript(""); setVoiceError(""); setVoicePhase("idle"); }
+    if (!active) { continuousVoice.stop();cancelListening(); stopSpeaking(); setInterimTranscript(""); setVoiceError(""); setVoicePhase("idle"); }
   }, [active]);
   useEffect(() => {
     if (!active || !conversationRequest || consumedRequest.current === conversationRequest.id) return;
@@ -1311,7 +1282,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       return;
     }
     consumedRequest.current = conversationRequest.id;
-    if(conversationRequest.mode==='voice'){startHomeVoice();return;}
+    if (conversationRequest.mode === 'voice') return;
     if (conversationRequest.question) { ask(conversationRequest.question,false,true); }
   }, [active, conversationRequest, analysis, profile, hasPendingPreview, profiles]);
 
@@ -1343,9 +1314,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       </div>}
       <div className="bucky-interactions">
       <>
-          {inlineVoice && <div className="bucky-home-voice-toolbar"><span className={voiceError?'bucky-voice-dot is-error':speechPending||voicePhase==='speaking'||voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'bucky-voice-dot is-busy':voicePhase==='listening'&&!micPending&&recognitionRef.current?'bucky-voice-dot':'bucky-voice-dot is-idle'} role="status"><span className="sr-only">{voiceError?'Voice unavailable':speechPending?'Preparing greeting':voicePhase==='speaking'?'Speaking':micPending?'Starting microphone':voicePhase==='listening'?'Listening':voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'Processing':voicePhase==='review'?'Review transcript':pendingAction||pendingProduct?'Confirmation required':'Ready'}</span></span><div className="bucky-home-voice-actions"><button className="btn ghost small" type="button" onClick={stopHomeVoice}>Stop</button><button className="btn ghost small" type="button" aria-expanded={voiceHistoryExpanded} onClick={()=>setVoiceHistoryExpanded(value=>!value)}>Details</button><button className="btn ghost small" type="button" onClick={()=>{if(!onNavigateAway || onNavigateAway())stopHomeVoice();}}>Close</button></div></div>}
+          {inlineVoice && <div className="bucky-home-voice-toolbar"><span className={voiceError?'bucky-voice-dot is-error':speechPending||voicePhase==='speaking'||voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'bucky-voice-dot is-busy':voicePhase==='listening'&&!micPending&&recognitionRef.current?'bucky-voice-dot':'bucky-voice-dot is-idle'} role="status"><span className="sr-only">{voiceError?'Voice unavailable':speechPending?'Preparing greeting':voicePhase==='speaking'?'Speaking':micPending?'Starting microphone':voicePhase==='listening'?'Listening':voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'Processing':voicePhase==='review'?'Confirmation required':pendingAction||pendingProduct?'Confirmation required':'Ready'}</span></span><div className="bucky-home-voice-actions"><button className="btn ghost small" type="button" onClick={stopHomeVoice}>Stop</button><button className="btn ghost small" type="button" aria-expanded={voiceHistoryExpanded} onClick={()=>setVoiceHistoryExpanded(value=>!value)}>Details</button><button className="btn ghost small" type="button" onClick={()=>{if(!onNavigateAway || onNavigateAway())stopHomeVoice();}}>Close</button></div></div>}
           <div className="bucky-scroll-region" ref={conversationScroll} onScroll={event=>{const el=event.currentTarget;followLatest.current=el.scrollHeight-el.scrollTop-el.clientHeight<40;}} tabIndex={inlineVoice?0:undefined} role={inlineVoice?'region':undefined} aria-label={inlineVoice?'Voice conversation':undefined}>
-          {inlineVoice && voiceError && <div><p className="alert-error" role="alert">{voiceError}</p><button className="btn ghost small" type="button" disabled={!recognitionSupported} onClick={ttsSupported?startHomeVoice:startListening}>{ttsSupported?'Retry':'Listen without greeting'}</button></div>}
+          {inlineVoice && voiceError && <div><p className="alert-error" role="alert">{voiceError}</p><button className="btn ghost small" type="button" disabled={!recognitionSupported} onClick={() => startHomeVoice(true)}>Retry</button></div>}
           {messageOwnerRef.current && analysis && (!inlineVoice || voiceHistoryExpanded) && (!analysis.hasAnyData ? (
             <div className="empty-state">
               <p>No records to analyse for {analysis.profileName} yet.</p>
@@ -1397,6 +1368,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
               {voiceMessages.map((msg) => (
                 <div key={msg.id} className={msg.role === "user" ? "bucky-msg bucky-msg--user" : "bucky-msg bucky-msg--bucky"}>
                   <p>{msg.profileName ? msg.text.replace("All-time recorded totals for "+msg.profileName+".", "All-time totals.") : msg.text}</p>
+                  {msg.modelLabel && <small className="bucky-model-label">{msg.modelLabel}</small>}
                   {(!inlineVoice||voiceHistoryExpanded)&&msg.facts.length > 0 && (
                     <dl className="bucky-evidence">
                       {msg.facts.map((f) => (
@@ -1557,22 +1529,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
             {interimTranscript && voicePhase === "listening" && (
               <p className="bucky-voice-interim" role="status">{inlineVoice?"YOU: ":"Heard: "}{interimTranscript}…</p>
-            )}
-            {(!inlineVoice||voiceHistoryExpanded)&&pendingTranscript && voicePhase !== "listening" && (
-              <div className="bucky-voice-heard">
-                <p role="status"><strong>Heard:</strong> “{pendingTranscript}”</p>
-                <div className="row-actions">
-                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={correctTranscript}>
-                    Correct
-                  </button>
-                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={retryListening}>
-                    Retry
-                  </button>
-                  <button className="btn ghost small" type="button" onClick={() => { if (question === pendingTranscript) setQuestion(""); stopSpeaking(); setPendingTranscript(""); setVoiceError(""); setVoicePhase("idle"); }}>
-                    Dismiss
-                  </button>
-                </div>
-              </div>
             )}
             {!inlineVoice && voiceError && <p className="alert-error" role="alert">{voiceError}</p>}
             {!recognitionSupported && (

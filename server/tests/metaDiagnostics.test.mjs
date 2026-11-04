@@ -105,9 +105,9 @@ test("schema-validation and grounding-validation failures have their own categor
   assert.deepEqual(parsed, { entries: [] });
   const advice = await sendMetaAdvice(
     REQUEST,
-    httpResponse(200, JSON.stringify({ output_text: JSON.stringify({ answer: "x" }) })),
+    httpResponse(200, JSON.stringify({ model: "muse-spark-1.3", output_text: JSON.stringify({ answer: "x" }) })),
   );
-  assert.deepEqual(advice, { answer: "x" });
+  assert.deepEqual(advice, { advice: { answer: "x" }, model: "muse-spark-1.3" });
 });
 
 test("non-diagnostic errors collapse to unknown with no leaked details", () => {

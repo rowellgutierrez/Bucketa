@@ -134,7 +134,7 @@ test("mocked live edit returns the validated PNG and sends one upstream request"
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push({ url, body: JSON.parse(init.body) });
-    return jsonResponse(200, { status: "completed", output: [{ type: "image_generation_call", result: PNG_B64 }] });
+    return jsonResponse(200, { status: "completed", model: "muse-image-1.0", output: [{ type: "image_generation_call", result: PNG_B64 }] });
   };
   await withServer(liveConfig, fetchImpl, async (base) => {
     const res = await fetch(`${base}/api/creative/edit`, {
@@ -144,13 +144,43 @@ test("mocked live edit returns the validated PNG and sends one upstream request"
     });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.model, "muse-image-1.0");
+    assert.equal(body.verifiedModel, "muse-image-1.0");
     assert.equal(body.imageDataUrl, `data:image/png;base64,${PNG_B64}`);
     assert.equal(seen.length, 1);
     assert.equal(seen[0].body.model, "muse-image-1.0");
     assert.equal(seen[0].body.tools[0].type, "image_generation");
     // No credential or upstream detail leaks into the browser response.
     assert.doesNotMatch(JSON.stringify(body), /test-key-not-real|Authorization/);
+  });
+});
+
+test("mocked prompt-only generation sends text and returns the generated PNG", async () => {
+  process.env.MODEL_API_KEY = "test-key-not-real";
+  const requests = [];
+  const upstream = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return jsonResponse(200, {
+      status: "completed",
+      output: [{ type: "reasoning" }, { type: "image_generation_call", status: "completed", result: PNG_B64 }],
+    });
+  };
+  await withServer(liveConfig, upstream, async (base) => {
+    const generate = (payload) => fetch(`${base}/api/creative/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "generate", prompt: "A coffee bag", ...payload }),
+    });
+    assert.equal((await generate({ mode: "fallback" })).status, 501);
+    assert.equal((await generate({ mode: "live", imageBase64: PNG_B64 })).status, 400);
+    assert.equal(requests.length, 0);
+    const res = await generate({ mode: "live" });
+    assert.equal(res.status, 200);
+    const result = await res.json();
+    assert.equal(result.imageDataUrl, `data:image/png;base64,${PNG_B64}`);
+    assert.equal(result.verifiedModel, null);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].model, "muse-image-1.0");
+    assert.equal(requests[0].input, "A coffee bag");
   });
 });
 

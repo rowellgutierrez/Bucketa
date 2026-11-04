@@ -33,6 +33,27 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
   const [loaded, setLoaded] = useState(false);
   const [requestReady, setRequestReady] = useState(false);
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const startHomeVoice = useRef<(() => void) | null>(null);
+  const scrollBeforeResize = useRef<{ top: number; atBottom: boolean } | null>(null);
+
+  function toggleExpanded() {
+    const region = dockHost.current?.querySelector(".bucky-scroll-region");
+    if (region) {
+      scrollBeforeResize.current = {
+        top: region.scrollTop,
+        atBottom: region.scrollHeight - region.clientHeight - region.scrollTop < 2,
+      };
+    }
+    setExpanded(value => !value);
+  }
+
+  useLayoutEffect(() => {
+    const saved = scrollBeforeResize.current;
+    const region = dockHost.current?.querySelector(".bucky-scroll-region");
+    if (saved && region) region.scrollTop = saved.atBottom ? region.scrollHeight : saved.top;
+    scrollBeforeResize.current = null;
+  }, [expanded]);
   const [inline, setInline] = useState(false);
   const [panelContainer] = useState(() => {const el=document.createElement('div');el.className='bucky-shared-panel bucky-conversation-host';return el;});
   const dockHost = useRef<HTMLDivElement>(null);
@@ -168,6 +189,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
       if (hasPendingAction || scannerDirty) { setShowPendingHint(true); if(!inline)setOpen(true); return; }
       const detail=(event as CustomEvent<BuckyConversationRequest>).detail;
       const homeVoice=detail?.mode==='voice' && hideLauncher;
+      if (homeVoice) startHomeVoice.current?.();
       setInline(homeVoice);setOpen(!homeVoice);
       setRequestReady(false);
       void load(loaded);
@@ -222,7 +244,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
       )}
       <dialog
         ref={dialog}
-        className={scanMode ? "bucky-dock-dialog bucky-dock-dialog--scan" : "bucky-dock-dialog"}
+        className={scanMode ? "bucky-dock-dialog bucky-dock-dialog--scan" : expanded ? "bucky-dock-dialog bucky-dock-dialog--expanded" : "bucky-dock-dialog"}
         aria-labelledby="bucky-dock-heading"
         onCancel={(e) => {
           // Escape must never silently discard an unsaved preview.
@@ -239,6 +261,15 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
 
           <div className="bucky-dock-identity">{open && !scanMode && <div className="bucky-dock-avatar"><BuckyStatusMascot /></div>}<div><h2 id="bucky-dock-heading">{scanMode ? "Scan a record" : "Bucky Financial Intelligence"}</h2>{!scanMode && presentation.label && !['idle','error','warning'].includes(presentation.phase) && <p className={'bucky-live-state bucky-live-state--'+presentation.phase} role="status">{presentation.label}</p>}</div></div>
           <div className="row-actions">
+            {!scanMode && (
+              <button className="btn ghost bucky-expand" type="button" onClick={toggleExpanded}
+                aria-label={expanded ? "Restore conversation" : "Expand conversation"}
+                title={expanded ? "Restore conversation" : "Expand conversation"}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d={expanded ? "M4 10h6V4m10 10h-6v6M10 10 4 4m10 10 6 6" : "M10 4H4v6M14 20h6v-6M4 4l6 6m10 10-6-6"} />
+                </svg>
+              </button>
+            )}
             {scanMode && (
               <button className="btn ghost" type="button" onClick={exitScanMode}>
                 Back to Bucky
@@ -266,7 +297,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
         {inline && showPendingHint && hasUnsavedWork && <p role="alert" className="alert-error">Confirm or cancel the pending preview before closing.</p>}
         {inline && !loaded && status!=='error' && <p role="status">Loading your saved records…</p>}
         {inline && status==='error' && <div><p role="alert" className="alert-error">Bucky couldn't load your records. Nothing was changed.</p><button type="button" className="btn" onClick={()=>void load()}>Retry</button></div>}
-        {loaded && <BuckyPanel preferredProfileId={pageProfile||undefined} profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
+        {<BuckyPanel homeVoiceStartRef={startHomeVoice} preferredProfileId={pageProfile||undefined} profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
           navigationKey={navigationKey} conversationRequest={requestReady ? request : null} active={(open || inline) && !scanMode && status !== "error"} compact inlineVoice={inline}
           onRecordsChanged={() => void load(true)} onPendingActionChange={setHasPendingAction}
           onNavigateAway={requestClose} onScanRequest={requestScan}/>}
