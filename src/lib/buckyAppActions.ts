@@ -89,9 +89,12 @@ export function resolveNamedProfile(text:string,profiles:Profile[]):ProfileResol
  const named=/\bbusiness\s+(?:called|named)\s+["“]?([^"”.,!?]{1,80}?)["”]?(?=\s+with\b|[.,!?]|$)/i.exec(normalized)
   ?? /\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?["“]([^"”]{1,80})["”](?:\s+business)?/i.exec(normalized)
   ?? /\b(?:my|the)\s+([\p{L}\p{N}][\p{L}\p{N} '&-]{0,60}?)\s+business(?=\s+(?:with|and)\b|[.,!?]|$)/iu.exec(normalized);
+ const full=hits.filter(p=>!hits.some(other=>other.name.length>p.name.length&&other.name.toLowerCase().includes(p.name.toLowerCase())));
+ const distinct=[...new Map(full.map(p=>[p.id,p])).values()];
+ if(distinct.length>1)return{status:'ambiguous',profiles:distinct};
  const explicit=named??(profileCommand(normalized)?/\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?([^.,!?]{1,80}?)\s+business(?=\s+with\b|[.,!?]|$)/i.exec(normalized)??/\bunder\s+(?:my\s+|the\s+)?([^.,!?]{1,80}?)(?:\s+business)?(?=\s+with\b|[.,!?]|$)/i.exec(normalized):null);
  if(explicit){const name=explicit[1].trim();if(name&&!/^(?:this|that|my|the|a|an|small|local|own|new)$/i.test(name)){const exact=profiles.filter(p=>p.name.trim().toLowerCase()===name.toLowerCase());if(exact.length===1)return{status:'matched',profile:exact[0]};if(exact.length>1)return{status:'ambiguous',profiles:exact};return{status:'named-missing',name};}}
- if(hits.length){const full=hits.filter(p=>!hits.some(other=>other.name.length>p.name.length&&other.name.toLowerCase().includes(p.name.toLowerCase())));const distinct=[...new Map(full.map(p=>[p.id,p])).values()];return distinct.length===1?{status:'matched',profile:distinct[0]}:{status:'ambiguous',profiles:distinct};}
+ if(distinct.length===1)return{status:'matched',profile:distinct[0]};
  return{status:'none'};
 }
 

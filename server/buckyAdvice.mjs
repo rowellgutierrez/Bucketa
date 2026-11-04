@@ -420,7 +420,45 @@ export const BUCKY_ADVICE_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
+const FINANCIAL_EXPLANATIONS = {
+  records: "These figures reflect the recorded activity for the requested scope.",
+  cash_flow: "Net cash flow is recorded income minus recorded expenses. It is neither profit nor a bank balance.",
+  pos: "POS revenue is reported separately from recorded transaction income.",
+  currencies: "Amounts in different currencies are reported separately.",
+};
+
+function financialExplanationChoices({ facts }) {
+  const labels = facts.map(({ label }) => label).join(" ");
+  const currencies = new Set(facts.map(({ value }) => /^-?([A-Z]{3})\s/.exec(value)?.[1]).filter(Boolean));
+  return [
+    "records",
+    ...(/net (?:recorded )?cash flow/i.test(labels) ? ["cash_flow"] : []),
+    ...(/POS revenue/i.test(labels) ? ["pos"] : []),
+    ...(currencies.size > 1 ? ["currencies"] : []),
+  ];
+}
+
+export function financialAdviceSchema(context) {
+  return {
+    type: "object",
+    properties: { explanationId: { type: "string", enum: financialExplanationChoices(context) } },
+    required: ["explanationId"],
+    additionalProperties: false,
+  };
+}
+
 export function buildBuckyAdvicePrompt({ question, summary, history = [] }) {
+  if (summary.queryContext) {
+    const { answer, facts } = summary.queryContext;
+    return [
+      "Select the most useful explanation for the read-only financial answer below.",
+      "Return only an allowed explanationId. Do not generate figures, claims, or actions.",
+      JSON.stringify({
+        question, answer, facts,
+        explanations: Object.fromEntries(financialExplanationChoices(summary.queryContext).map(id => [id, FINANCIAL_EXPLANATIONS[id]])),
+      }),
+    ].join("\n");
+  }
   const historyLines = (history ?? []).slice(-6).map((turn) => `${turn.role === "user" ? "User" : "Bucky"}: ${turn.text}`);
   return [
     summary.conversationOnly?"You are Bucky, a friendly financial and business assistant inside Bucketa. This is ordinary conversation. Never claim that an application action was executed: this response cannot modify records. No personal or business profile, financial records, balances, goals, or employee information are attached. Answer the general question without pretending to read records; ask for a profile when a request needs actual data.":`You are Bucky, a financial assistant inside Bucketa, answering a question for the profile "${summary.profileName}" (${summary.profileKind}).`,
@@ -518,6 +556,18 @@ function schemaError(subReason) {
 }
 
 export function validateModelAdvice(parsed, summary) {
+  if (summary.queryContext) {
+    if (!parsed || !hasOnlyKeys(parsed, ["explanationId"]) ||
+        !financialExplanationChoices(summary.queryContext).includes(parsed.explanationId)) {
+      throw metaDiagnosticError("grounding_validation");
+    }
+    return {
+      answer: summary.queryContext.answer,
+      explanation: FINANCIAL_EXPLANATIONS[parsed.explanationId],
+      suggestedActions: [],
+      limitations: [],
+    };
+  }
   if (!isRecord(parsed)) throw schemaError("unknown_schema_failure");
   if (!ADVICE_REQUIRED_KEYS.every((k) => Object.hasOwn(parsed, k))) {
     throw schemaError("missing_required_keys");

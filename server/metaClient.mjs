@@ -1,6 +1,6 @@
 import { PRODUCT_ANALYSIS_SCHEMA, PRODUCT_ANALYSIS_PROMPT, validateProductAnalysis } from "./productAnalysis.mjs";
 import { buildExtractionPrompt, EXTRACTION_JSON_SCHEMA } from "./extractSchema.mjs";
-import { BUCKY_ADVICE_JSON_SCHEMA, buildBuckyAdvicePrompt } from "./buckyAdvice.mjs";
+import { BUCKY_ADVICE_JSON_SCHEMA, buildBuckyAdvicePrompt, financialAdviceSchema } from "./buckyAdvice.mjs";
 import { BUCKY_INTERPRET_JSON_SCHEMA, buildInterpretPrompt } from "./buckyInterpret.mjs";
 import { metaDiagnosticError } from "./metaDiagnostics.mjs";
 
@@ -257,7 +257,7 @@ export function buildMetaAdviceRequest({ question, summary, history = [], apiKey
           type: "json_schema",
           name: "bucketa_bucky_advice",
           strict: true,
-          schema: BUCKY_ADVICE_JSON_SCHEMA,
+          schema: summary.queryContext ? financialAdviceSchema(summary.queryContext) : BUCKY_ADVICE_JSON_SCHEMA,
         },
       },
     },

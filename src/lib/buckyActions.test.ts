@@ -67,6 +67,7 @@ test("read-only financial analysis questions are Q&A, never transaction commands
 
 test("legitimate transaction commands still produce confirmable proposals", () => {
   assert.equal(isFinancialAnalysisQuestion("Record ₱5,000 income from freelance work"), false);
+  assert.equal(isFinancialAnalysisQuestion("Hi Bucky! Record ₱500 for a budget expense?"), false);
   const income = proposal("Record ₱5,000 income from freelance work", ctx());
   assert.equal(income.kind, "income");
   // Plural "expenses" in an explicit command is still an expense command.

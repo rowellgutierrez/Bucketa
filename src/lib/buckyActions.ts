@@ -87,7 +87,7 @@ const IMPERATIVE_START = /^(increase|restock|raise|record|add|log|pay|paid|depos
  * every write safeguard and confirmation stays intact.
  */
 export function isFinancialAnalysisQuestion(text: string): boolean {
-  const raw = text.trim().replace(/^(?:(?:hey|hi)\s+)?bucky[,\s:]+/i,'').replace(/^please\s+/i,'');
+  const raw = text.trim().replace(/^(?:(?:hey|hi|hello)\s+)?bucky[!,\s:]+/i,'').replace(/^please\s+/i,'');
   if (!raw) return false;
   if (IMPERATIVE_START.test(raw)) return false;
   const lower = raw.toLowerCase();

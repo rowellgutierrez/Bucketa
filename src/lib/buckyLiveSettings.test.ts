@@ -39,14 +39,14 @@ test("provenance distinguishes live, attempted-live fallback, and deterministic 
   );
 });
 
-test("Bucky chat shows no live status or provenance text (panel + floating share BuckyPanel)", async () => {
+test("Bucky chat distinguishes local answers from failed live explanations", async () => {
   const { readFileSync } = await import("node:fs");
   const panel = readFileSync(new URL("../components/BuckyPanel.tsx", import.meta.url), "utf8");
   assert.equal(panel.includes("Asking live Meta AI"), false);
   assert.equal(panel.includes("Answered by live Meta AI"), false);
   assert.equal(panel.includes("describeAdviceSource"), false);
-  // Fallback labelling is preserved for when live AI is unavailable.
-  assert.match(panel, /deterministic fallback calculated from your records/);
+  assert.match(panel, /No Meta request was made/);
+  assert.match(panel, /live Meta explanation failed/);
 });
 
 test("single-flight guard allows exactly one pending submission (typed or voice)", () => {

@@ -146,7 +146,7 @@ async function handleBuckyAdvise(req, res, { config, fetchImpl }) {
   const fallback = buildDeterministicAdvice(validated);
   const evidence = buildVerifiedEvidence(validated.summary);
 
-  if (validated.mode !== "live" || validated.summary.queryContext) {
+  if (validated.mode !== "live" || validated.summary.queryContext?.limited) {
     sendJson(res, 200, { source: "deterministic-fallback", model: null, ...fallback, evidence });
     return;
   }

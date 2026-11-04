@@ -480,6 +480,12 @@ export interface BuckyAnswer {
   insufficientData: boolean;
 }
 
+export function financialQuestionIntent(question: string): "growth" | "explanation" | "report" {
+  if (/\b(?:grow|increase|boost|improve)\b[^.!?]*\b(?:income|revenue|sales|earnings)\b|\bearn more\b/i.test(question)) return "growth";
+  if (/\b(?:why|what caused|explain why)\b/i.test(question)) return "explanation";
+  return "report";
+}
+
 /** Deterministic question answering over a completed analysis. No model call. */
 export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): BuckyAnswer {
   const original = question.toLowerCase().trim();
@@ -512,6 +518,27 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
     return { answer: `Hello! I'm Bucky, your Bucketa assistant for ${analysis.profileName}. I can explain your recorded sales, expenses, savings, inventory and employees, and — with your confirmation — record income or expenses, add products or employees, adjust stock, create savings buckets, and queue items for the POS cart. Ask me something like "How much did we earn today?" or "Show my best-selling products."`, facts: [], proposalIds: [], insufficientData: false };
   }
   if (/inventory.*(?:value|valuation)|(?:value|valuation).*inventory/.test(q)) return insufficient('I can report low stock, but inventory valuation is not supported by this answer path.');
+  const intent = financialQuestionIntent(q);
+  const currencyCandidate = /\bin\s+([a-z]{3})\b/i.exec(question)?.[1].toUpperCase();
+  const requestedCurrency = currencyCandidate && Intl.supportedValuesOf("currency").includes(currencyCandidate)
+    ? currencyCandidate : undefined;
+  const currencies = analysis.currencies.filter(c => !requestedCurrency || c.currency === requestedCurrency);
+  if (intent === "growth") {
+    if (requestedCurrency && !currencies.length) return insufficient(`No matching records in ${requestedCurrency} for ${analysis.profileName}.`);
+    const seller = analysis.bestSellers.find(s => !requestedCurrency || s.currency === requestedCurrency);
+    const facts = currencies.filter(c => c.transactionCount > 0).map(c => ({
+      label: `Recorded income (${c.currency}, all time)`, value: money(c.incomeMinor, c.currency),
+    }));
+    if (seller) facts.push({ label: `Top product by units sold (${seller.currency}, all time)`, value: `${seller.name} · ${seller.quantity} sold` });
+    const experiment = seller
+      ? `Test featuring ${seller.name} in one promotion or bundle, then compare units sold and POS revenue with a similar period.`
+      : "Review repeat sources of recorded income, then test one offer or follow-up and compare recorded income with a similar period.";
+    return {
+      answer: `Income growth ideas for ${analysis.profileName}. General recommendations: ${experiment} Check costs before expanding the experiment. The recorded facts below are a baseline, not a forecast or a measure of profit.`,
+      facts, proposalIds: [], insufficientData: false,
+    };
+  }
+  const totalCashFlow = /\bcash\s*flow\b/.test(q);
   const totalIncome = /\b(income|earned|earnings)\b/.test(q);
   const totalExpense = /\b(expenses?|spent|spending)\b/.test(q) && !/why|increase|decrease|trend|category|categories|biggest|largest/.test(q);
   const totalSales = /\b(sales?|pos|revenue|sell|sold)\b/.test(q);
@@ -519,13 +546,14 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
   if ((totalIncome || totalExpense || totalSales || /cash flow/.test(q)) && dateQualified && !/salary|salaries|payroll|bonus|advance|employee|why|trend|increas/.test(q)) {
     return insufficient('I cannot reliably apply that date range to this question yet. Use the date filters in Transactions or Sales / POS, or ask for an all-time total.');
   }
-  if ((totalIncome || totalExpense || totalSales) && !/salary|salaries|payroll|bonus|advance|employee|saving|goal|bucket|duplicate|twice|double|stock|inventory|product|why|trend|increase|decrease|category|categories|largest|biggest/.test(q)) {
-    if (totalSales && !analysis.currencies.some(c => c.posSaleCount > 0)) return insufficient('No completed POS sales are recorded for this profile yet.');
-    const metrics: {label:string; key:'incomeMinor'|'expenseMinor'|'posRevenueMinor'}[] = [];
+  if ((totalIncome || totalExpense || totalSales || totalCashFlow) && intent === "report" && !/salary|salaries|payroll|bonus|advance|employee|saving|goal|bucket|duplicate|twice|double|stock|inventory|product|why|trend|increase|decrease|category|categories|largest|biggest/.test(q)) {
+    if (totalSales && !currencies.some(c => c.posSaleCount > 0)) return insufficient('No completed POS sales are recorded for this profile yet.');
+    const metrics: {label:string; key:'incomeMinor'|'expenseMinor'|'posRevenueMinor'|'netCashFlowMinor'}[] = [];
     if (totalIncome) metrics.push({label:'Recorded income',key:'incomeMinor'});
     if (totalExpense) metrics.push({label:'Recorded expenses',key:'expenseMinor'});
+    if (totalCashFlow) metrics.push({label:'Net recorded cash flow (not profit)',key:'netCashFlowMinor'});
     if (totalSales) metrics.push({label:'POS revenue',key:'posRevenueMinor'});
-    const facts = analysis.currencies.flatMap(c => metrics.map(metric => ({label:metric.label+(analysis.currencies.length>1?' ('+c.currency+')':''),value:money(c[metric.key],c.currency)})));
+    const facts = currencies.flatMap(c => metrics.map(metric => ({label:metric.label+(analysis.currencies.length>1?' ('+c.currency+')':''),value:money(c[metric.key],c.currency)})));
     if (!facts.length) return insufficient('No matching financial records are saved for this profile yet.');
     return {answer:'All-time recorded totals for '+analysis.profileName+'. POS revenue is separate from recorded income. Savings movements are not income or expenses.',facts,proposalIds:[],insufficientData:false};
   }
@@ -688,8 +716,8 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
 
 /** Aggregated summary safe to send to a model: totals and counts only, no raw records. */
 export function isRecordQuestion(question:string){return /\b(income|expenses?|spent|spending|cash flow|revenue|sales?|savings|goals?|buckets?|stock|inventory|products?|salary|salaries|employees?|bonus|advance|profit|earn|earned|earnings|pay|balance|budget|finance|financial|payments?|wages?|money|cash|nagastos|ginastos|gastos|benta|ipon|naipon|produkto|imbentaryo)\b/i.test(question)||/\b(how much|magkano)\b/i.test(question);}
-export function buildBuckyModelSummary(analysis: BuckyAnalysis, question?:string) {
- const answer=question&&isRecordQuestion(question)?answerBuckyQuestion(question,analysis):null;
+export function buildBuckyModelSummary(analysis: BuckyAnalysis, question?:string, localAnswer?: BuckyAnswer) {
+ const answer = localAnswer ?? (question && isRecordQuestion(question) ? answerBuckyQuestion(question, analysis) : null);
   return {
     ...(answer&&question?{queryContext:{question,localDate:analysis.localDate??localDateKey(new Date(analysis.generatedAt)),answer:answer.answer.length<=1200?answer.answer:"This answer needs a narrower question. No date or financial figure was inferred.",facts:answer.answer.length<=1200?answer.facts.slice(0,10):[],limited:answer.insufficientData||answer.answer.length>1200}}:{}),
     profileName: analysis.profileName,

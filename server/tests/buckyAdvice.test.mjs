@@ -397,3 +397,56 @@ test('General conversation context cannot smuggle a financial profile or records
  const request=validateAdviceRequest({question:'Explain bookkeeping for beginners.',summary:context});assert.equal(request.summary.conversationOnly,true);assert.deepEqual(buildVerifiedEvidence(request.summary),[]);assert.equal(buildDeterministicAdvice(request).answer.includes('Sofia'),false);assert.ok(buildBuckyAdvicePrompt(request).includes('No personal or business profile'));
  assert.throws(()=>validateAdviceRequest({question:'Hello',summary:{...context,profileName:'Sofia'}}));assert.throws(()=>validateAdviceRequest({question:'Hello',summary:{...context,currencies:summary().currencies}}));
 });
+
+test("scoped financial advice sends only exact query facts and accepts only a scoped explanation", async () => {
+  process.env.MODEL_API_KEY = "test-key-not-real";
+  try {
+    const question = "What is Harbor Mini Market's net cash flow in USD?";
+    const queryContext = {
+      question, localDate: "2026-11-03", answer: "Net cash flow: USD 40.00.",
+      facts: [{ label: "Net cash flow USD", value: "USD 40.00" }], limited: false,
+    };
+    let calls = 0;
+    let output = { explanationId: "cash_flow" };
+    await withServer({ ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true }, {
+      fetchImpl: async (_url, init) => {
+        calls++;
+        const request = JSON.parse(init.body);
+        assert.equal(request.model, "muse-spark-1.3");
+        const prompt = request.input[0].content[0].text;
+        assert.match(prompt, /USD 40.00/);
+        assert.doesNotMatch(prompt, /Private other business|incomeMinor|POS revenue/);
+        return {
+          status: 200,
+          text: async () => JSON.stringify({ model: "muse-spark-1.3", output_text: JSON.stringify(output) }),
+        };
+      },
+    }, async base => {
+      const body = { mode: "live", question, summary: summary({ queryContext }),
+        history: [{ role: "user", text: "Private other business" }] };
+      const live = await postAdvise(base, body);
+      assert.equal(live.json.source, "meta-live");
+      assert.equal(live.json.model, "muse-spark-1.3");
+      assert.equal(live.json.answer, queryContext.answer);
+      assert.deepEqual(live.json.evidence, queryContext.facts);
+      assert.deepEqual(live.json.suggestedActions, []);
+      for (const invalid of [
+        { explanationId: "cash_flow", answer: "PHP 4000 profit" },
+        { explanationId: "pos" },
+      ]) {
+        output = invalid;
+        const failed = await postAdvise(base, body);
+        assert.equal(failed.json.source, "deterministic-fallback");
+        assert.equal(failed.json.model, null);
+        assert.equal(failed.json.diagnostic.category, "grounding_validation");
+        assert.equal(failed.json.answer, queryContext.answer);
+      }
+      const local = await postAdvise(base, { ...body, summary: summary({ queryContext: { ...queryContext, limited: true } }) });
+      assert.equal(local.json.source, "deterministic-fallback");
+      assert.equal(local.json.diagnostic, undefined);
+      assert.equal(calls, 3);
+    });
+  } finally {
+    delete process.env.MODEL_API_KEY;
+  }
+});

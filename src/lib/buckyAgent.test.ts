@@ -533,3 +533,30 @@ test("best-selling products and earned-today come from completed sales and dated
 test('Ordinary conversation attaches no personal/business financial context',()=>{
  const context=buildBuckyConversationSummary();assert.equal(context.conversationOnly,true);assert.deepEqual(context.currencies,[]);assert.deepEqual(context.savingsGoals,[]);assert.deepEqual(context.insightKinds,[]);assert.equal(context.profileName,'Bucketa');const answer=answerBuckyConversation();assert.deepEqual(answer.facts,[]);assert.equal(/Sofia|PHP|USD|₱/.test(answer.answer),false);
 });
+
+test("Harbor summary and consecutive income-growth questions stay grounded in the selected business", () => {
+  const harbor = profile({ id: "harbor", name: "Harbor Mini Market", kind: "business", currency: "USD" });
+  const analysis = analyze({
+    profile: harbor,
+    transactions: [
+      txn({ profileId: harbor.id, type: "income", amountMinor: 329700, currency: "USD" }),
+      txn({ profileId: harbor.id, type: "expense", amountMinor: 555500, currency: "USD" }),
+      txn({ profileId: "unrelated", type: "income", amountMinor: 999999, currency: "USD" }),
+    ],
+  });
+  const question = "Summarize Harbor Mini Market's recorded income, expenses and net cash flow in USD.";
+  const report = answerBuckyQuestion(question, analysis);
+  assert.deepEqual(report.facts.map(fact => fact.value), ["$3,297.00", "$5,555.00", "-$2,258.00"]);
+  assert.match(report.facts[2].label, /cash flow/);
+  assert.deepEqual(buildBuckyModelSummary(analysis, question, report).queryContext?.facts, report.facts);
+
+  for (const followUp of ["Can you help me how to grow my income?", "How can I grow my income?"]) {
+    const advice = answerBuckyQuestion(followUp, analysis);
+    assert.match(advice.answer, /Income growth ideas for Harbor Mini Market/);
+    assert.match(advice.answer, /General recommendations:.*test one offer/);
+    assert.deepEqual(advice.facts.map(fact => fact.value), ["$3,297.00"]);
+    assert.deepEqual(advice.proposalIds, []);
+    assert.notEqual(advice.answer, report.answer);
+    assert.equal(buildBuckyModelSummary(analysis, followUp, advice).queryContext?.answer, advice.answer);
+  }
+});

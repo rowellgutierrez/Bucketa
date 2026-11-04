@@ -23,6 +23,7 @@ import {
   analyzeBuckyFinances,
   answerBuckyQuestion,
   buildBuckyModelSummary,
+  financialQuestionIntent,
   isRecordQuestion,
   buildBuckyConversationSummary,
   answerBuckyConversation,
@@ -169,6 +170,8 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const [thread, setThread] = useState<{ id: number; role: "user" | "bucky"; text: string; profileId?: string; profileName?: string; modelLabel?: string; facts: { label: string; value: string }[]; proposalIds: string[] }[]>([]);
   const msgIdRef = useRef(0);
   const messageOwnerRef=useRef<Profile|null>(null);
+  const lastFinancialProfile = useRef<string | undefined>(undefined);
+  useEffect(() => { lastFinancialProfile.current = undefined; }, [navigationKey, preferredProfileId]);
   const submissionGate=useRef(createBuckySubmissionGate()).current;
   const [voiceHistoryExpanded,setVoiceHistoryExpanded]=useState(false);
   const [voiceSessionStart,setVoiceSessionStart]=useState(0);
@@ -453,8 +456,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     // and go straight to Q&A below (deterministic, or live Meta AI when
     // enabled). Explicit creation commands are never classified this way.
     const analysisQuestion = isFinancialAnalysisQuestion(q);
+    const growthQuestion = analysisQuestion && financialQuestionIntent(q) === "growth";
     const acrossBusinesses=/\b(?:compare|across|all|both)\b[^.!?]*\bbusinesses\b/i.test(q);
-    const recordQuestion=(acrossBusinesses||detectUnsupportedAction(q)||isRecordQuestion(q)||/^(?:(?:hi|hey)\s+)?(?:bucky[,!\s]+)?(?:please\s+)?(?:add|create|record|log|pay|deposit|contribute|restock|increase)\b/i.test(q))&&!isGeneralBuckyConversation(q);
+    const recordQuestion=(analysisQuestion||acrossBusinesses||detectUnsupportedAction(q)||isRecordQuestion(q)||/^(?:(?:hi|hey)\s+)?(?:bucky[,!\s]+)?(?:please\s+)?(?:add|create|record|log|pay|deposit|contribute|restock|increase)\b/i.test(q))&&(growthQuestion||!isGeneralBuckyConversation(q));
 
     if(!recordQuestion){
       const voiceRequestEpoch=utteranceIdRef.current;
@@ -471,7 +475,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     // request only. The target profile is resolved before any preview, and
     // ambiguous or unknown names clarify instead of guessing.
     if(acrossBusinesses){messageOwnerRef.current=null;pushMsg('user',q);const note={answer:'I can provide accurate financial answers for one profile at a time. Cross-business comparisons are not supported yet; name a business and I can report its recorded figures separately.',facts:[],proposalIds:[],insufficientData:true};setAnswer(note);if(viaVoice&&voiceResponsesOnRef.current)speakText(prepareSpeechText(note.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}return;}
-    const named = resolveBuckyRecordProfile(q, profiles,{pageProfileId:preferredProfileId??conversationRequest?.profileId,products:effectiveProducts,employees,buckets});
+    const named = resolveBuckyRecordProfile(q, profiles,{pageProfileId:(growthQuestion ? lastFinancialProfile.current : undefined)??preferredProfileId??conversationRequest?.profileId,products:effectiveProducts,employees,buckets});
     if (named.status === "ambiguous" || named.status === "named-missing") {
       messageOwnerRef.current=null;pushMsg("user",q);
       const businesses = profiles.filter((p) => p.kind === "business").map((p) => p.name).join(", ");
@@ -619,39 +623,37 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       return;
     }
     const next = answerBuckyQuestion(q, routedAnalysis);
-    // Financial Q&A: when live Meta AI is configured on the server, ask
-    // the real model by default with the grounded aggregated summary.
-    // A labelled deterministic fallback is used only when live is not
-    // configured or the live response fails validation — never
-    // presented as a successful Meta AI response.
+    if (!next.insufficientData) lastFinancialProfile.current = routedProfile.id;
+    // Exact local facts stay authoritative. Meta can select a scoped explanation.
     let displayAnswer: BuckyAnswer & { modelLabel?: string } = next;
-    if (buckyAdviceMode(liveAvailability) === "live" && adviceGuardRef.current.tryStart()) {
+    if (!next.insufficientData && buckyAdviceMode(liveAvailability) === "live" && adviceGuardRef.current.tryStart()) {
       setServerBusy(true);
       try {
-        const response = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis, q), { mode: "live", history: scopedBuckyHistory(thread, "") });
+        const response = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis, q, next), { mode: "live" });
         if (response.source === "meta-live") {
           // Genuine live answer: no status/provenance line is shown.
-          displayAnswer = { answer: response.answer, modelLabel: buckyModelLabel(response), facts: response.evidence, proposalIds: [], insufficientData: false };
+          displayAnswer = { ...next, answer: `${next.answer}\n\n${response.explanation}`, modelLabel: buckyModelLabel(response) };
         } else {
-          setServerNote("Live Meta AI was unavailable, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.");
+          setServerNote(response.diagnostic ? "The live Meta explanation failed. These figures were calculated locally from your records." : "Calculated from your records. No Meta inference was used.");
         }
-      } catch {
-        setServerNote("Live Meta AI was unavailable, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.");
+      } catch (error) {
+        const rejectedLocally = error instanceof BuckyApiError && [400, 403, 413].includes(error.status ?? 0);
+        setServerNote(rejectedLocally
+          ? "The server rejected the explanation request before Meta inference. These figures were calculated locally."
+          : "The live explanation request could not be completed. These figures were calculated locally from your records.");
       } finally {
         adviceGuardRef.current.finish();
         setServerBusy(false);
       }
-    } else if (buckyAdviceMode(liveAvailability) !== "live") {
-      setServerNote(recordQuestion
-        ? "Exact financial answer calculated from the target profile's records. Unsupported date ranges are not inferred; no live request was made."
-        : "Answered deterministically from your recorded data. Live Meta AI is not configured on the server, so no paid request was made.");
+    } else {
+      setServerNote("Calculated from your records. No Meta request was made.");
     }
     setAnswer(displayAnswer);
     if(next.insufficientData){setInteractionPhase("error");recordBuckyEvent({id:"question:"+profile.id+":"+msgIdRef.current,status:"unsupported",title:q.length>70?q.slice(0,67)+"…":q,detail:"No changes were made. See Bucky’s response above.",profileId:profile.id,profileName:profile.name});}
     // The built-in interpreter couldn't make a record of this, but it
     // reads like one: offer explicit AI interpretation (Phase D). The
     // deterministic answer above stands either way.
-    if (looksLikeActionAttempt(q)) setAiInterpretText(q);
+    if (!analysisQuestion && looksLikeActionAttempt(q)) setAiInterpretText(q);
     if (viaVoice && voiceResponsesOnRef.current) {
       speakText(prepareSpeechText(displayAnswer.answer, displayAnswer.facts));
     } else if (viaVoice) {

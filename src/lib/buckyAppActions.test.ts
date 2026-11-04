@@ -118,6 +118,7 @@ test('Phase 2A general conversation never invents a business reference',()=>{
 });
 test('Phase 2A exact named analysis, ambiguity and full name boundaries stay safe',()=>{
  assert.equal(resolveNamedProfile('Analyze Kanto Food Truck sales.',[kanto,sofia]).profile?.id,'kanto');
+ assert.equal(resolveNamedProfile('Compare sales for "Kanto Food Truck" with Sofia.',[kanto,sofia]).status,'ambiguous');
  assert.equal(resolveNamedProfile('How much did Sofia save?',[kanto,sofia]).profile?.id,'sofia');
  assert.equal(resolveNamedProfile('Compare my businesses.',[kanto,sofia]).status,'none');
  assert.equal(resolveNamedProfile('What about Xsofia?',[sofia]).status,'none');
