@@ -1,3 +1,5 @@
+import {isFinancialAnalysisQuestion} from './buckyActions.ts';
+import {timestampLocalDate} from './localDate.ts';
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types.ts";
 import { parseAmountToMinorUnits } from "./currency.ts";
 
@@ -76,28 +78,27 @@ export type ProfileResolution =
   | { status: "ambiguous"; profiles: Profile[] }
   | { status: "named-missing"; name: string }
   | { status: "none" };
-export function resolveNamedProfile(text: string, profiles: Profile[]): ProfileResolution {
-  const lower = ` ${text.toLowerCase().replace(/\s+/g, " ")} `;
-  const hits = profiles.filter((p) => p.name.trim() && lower.includes(p.name.trim().toLowerCase()));
-  if (hits.length) {
-    const longest = Math.max(...hits.map((p) => p.name.trim().length));
-    const top = hits.filter((p) => p.name.trim().length === longest);
-    const distinct = [...new Map(top.map((p) => [p.id, p])).values()];
-    return distinct.length === 1 ? { status: "matched", profile: distinct[0] } : { status: "ambiguous", profiles: distinct };
-  }
-  const mentioned = /(?:under|for|in|to)\s+(?:my\s+|the\s+)?([a-z0-9][a-z0-9 '&-]{1,40}?)\s+business\b/i.exec(text)
-    ?? /\b(?:my|the)\s+([a-z0-9][a-z0-9 '&-]{1,40}?)\s+business\b/i.exec(text)
-    ?? /\bbusiness\s+(?:called|named)\s+([a-z0-9][a-z0-9 '&-]{1,40})/i.exec(text);
-  if (mentioned) {
-    const name = mentioned[1].trim().replace(/\s+/g, " ");
-    if (name && !/^(this|that|my|the|a|an)$/i.test(name)) return { status: "named-missing", name };
-  }
-  return { status: "none" };
+function escapeProfileName(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+function profileCommand(text:string){return /^(?:please\s+)?(?:add|create|increase|restock|raise|record|log|pay|deposit|contribute|put|save)\b/i.test(text.replace(/^(?:(?:hi|hey|hello)\s+)?bucky[!,:\s]+/i,''));}
+export function isGeneralBuckyConversation(text:string){return !profileCommand(text)&&(/\b(?:how|what)\b[^.!?]*\b(?:you|bucky)\b[^.!?]*\b(?:help|do|assist)\b/i.test(text)||/\b(?:bookkeeping|accounting)\s+for\s+beginners\b/i.test(text));}
+export function resolveNamedProfile(text:string,profiles:Profile[]):ProfileResolution{
+ const normalized=text.replace(/\s+/g,' ').trim();
+ const hits=profiles.filter(p=>{const name=p.name.trim().replace(/\s+/g,' ');return name&&new RegExp('(^|[^\\p{L}\\p{N}])'+escapeProfileName(name)+'(?=$|[^\\p{L}\\p{N}])','iu').test(normalized);});
+ // Unknown names require explicit naming, quotation, possessive reference,
+ // or a supported command's trailing "under <profile>" clause.
+ const named=/\bbusiness\s+(?:called|named)\s+["“]?([^"”.,!?]{1,80}?)["”]?(?=\s+with\b|[.,!?]|$)/i.exec(normalized)
+  ?? /\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?["“]([^"”]{1,80})["”](?:\s+business)?/i.exec(normalized)
+  ?? /\b(?:my|the)\s+([\p{L}\p{N}][\p{L}\p{N} '&-]{0,60}?)\s+business(?=\s+(?:with|and)\b|[.,!?]|$)/iu.exec(normalized);
+ const explicit=named??(profileCommand(normalized)?/\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?([^.,!?]{1,80}?)\s+business(?=\s+with\b|[.,!?]|$)/i.exec(normalized)??/\bunder\s+(?:my\s+|the\s+)?([^.,!?]{1,80}?)(?:\s+business)?(?=\s+with\b|[.,!?]|$)/i.exec(normalized):null);
+ if(explicit){const name=explicit[1].trim();if(name&&!/^(?:this|that|my|the|a|an|small|local|own|new)$/i.test(name)){const exact=profiles.filter(p=>p.name.trim().toLowerCase()===name.toLowerCase());if(exact.length===1)return{status:'matched',profile:exact[0]};if(exact.length>1)return{status:'ambiguous',profiles:exact};return{status:'named-missing',name};}}
+ if(hits.length){const full=hits.filter(p=>!hits.some(other=>other.name.length>p.name.length&&other.name.toLowerCase().includes(p.name.toLowerCase())));const distinct=[...new Map(full.map(p=>[p.id,p])).values()];return distinct.length===1?{status:'matched',profile:distinct[0]}:{status:'ambiguous',profiles:distinct};}
+ return{status:'none'};
 }
 
 /** "Add employee Roger" / "Add employee named Maria Santos as Cashier". Business only. */
 export function interpretEmployeeCommand(text: string, ctx: AppActionContext): AppActionInterpretation {
   const raw = text.trim();
+  if(isFinancialAnalysisQuestion(raw))return {status:"not-action"};
   if (!/\b(add|create)\b[^.?!]*\bemployee\b/i.test(raw) && !/\bemployee\s+(named|called)\b/i.test(raw) && !/\badd\b[^.?!]*\bemployee\s+record\b/i.test(raw)) return { status: "not-action" };
   if (ctx.profile.kind !== "business") return { status: "clarification", question: `Employees belong to a business profile, and "${ctx.profile.name}" is a personal profile. Name the business (for example "under my Bibingka business") or switch Bucky to it — nothing was created.` };
   // Optional salary: "monthly salary is PHP 15,000" / "salary PHP 15,000 a month".
@@ -113,14 +114,17 @@ export function interpretEmployeeCommand(text: string, ctx: AppActionContext): A
     salaryFrequency = /month/.test(freqWord) || /\bmonthly\b/i.test(raw) ? "monthly" : /week/.test(freqWord) ? "weekly" : /day/.test(freqWord) ? "daily" : /hour/.test(freqWord) ? "hourly" : salaryRateMinor !== undefined ? "monthly" : undefined;
     if (salaryRateMinor !== undefined && !salaryFrequency) salaryFrequency = "monthly";
   }
-  const withoutSalary = salaryMatch ? raw.replace(salaryMatch[0], " ") : raw;
-  const withoutBusiness = withoutSalary.replace(/\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?[^,.]+?\s+business\b/i, " ");
+  const withoutSalary = salaryMatch ? raw.replace(salaryMatch[0], " ").replace(/\s+(?:with|and)(?:\s+(?:a|an|his|her|their))?\s*[.!?]?\s*$/i, " ") : raw;
+  const withoutTarget=withoutSalary.replace(new RegExp("\\b(?:under|for|in|to)\\s+(?:(?:my|the)\\s+)?"+escapeProfileName(ctx.profile.name)+"(?:\\s+business)?(?=\\s|[,.!?]|$)","iu")," ");
+  const withoutBusiness = withoutTarget.replace(/\b(?:under|for|in|to)\s+(?:my\s+|the\s+)?[^,.]+?\s+business\b/i, " ");
   const roleMatch = /\bas\s+(?:a\s+|an\s+)?(.+?)\s*$/i.exec(withoutBusiness);
-  const role = roleMatch && !/salary/i.test(roleMatch[1]) ? titleCase(cleanName(roleMatch[1])) : null;
+  const role = roleMatch && !/salary|^(?:an?\s+)?employee$/i.test(roleMatch[1].trim()) ? titleCase(cleanName(roleMatch[1])) : null;
   let name = "";
   const nameIs = /\bname\s+is\s+([^,.]+?)(?:,|\band\b|\bwith\b|$)/i.exec(withoutBusiness)
     ?? /\b(?:named|called)\s+([^,.]+?)(?:,|\band\b|\bas\b|\bwith\b|$)/i.exec(withoutBusiness);
   if (nameIs) name = titleCase(cleanName(nameIs[1]));
+  const asEmployee=/\b(?:add|create)\s+(.+?)\s+as\s+(?:an?\s+)?employee\b/i.exec(withoutBusiness);
+  if(!name&&asEmployee)name=titleCase(cleanName(asEmployee[1]));
   if (!name) {
     let rest = withoutBusiness.replace(/\b(add|create)\b/i, " ").replace(/\bemployee\b/i, " ").replace(/\brecord\b/i, " ").replace(/\b(named|called)\b/i, " ").replace(/\bplease\b/gi, " ").replace(/\b(?:his|her|their)\s+name\s+is\b/i, " ");
     if (roleMatch) rest = rest.replace(roleMatch[0], " ");
@@ -134,6 +138,7 @@ export function interpretEmployeeCommand(text: string, ctx: AppActionContext): A
 
 /** "Increase Hakdog stock by 10" / "Add 10 stock to Hakdog" / "Restock Hakdog by 5". */
 export function interpretStockCommand(text: string, ctx: AppActionContext): AppActionInterpretation {
+  if(isFinancialAnalysisQuestion(text))return {status:"not-action"};
   const raw = text.trim();
   const lower = raw.toLowerCase();
   if (!/\bstock\b/.test(lower) && !/\brestock\b/.test(lower)) return { status: "not-action" };
@@ -150,6 +155,7 @@ export function interpretStockCommand(text: string, ctx: AppActionContext): AppA
 
 /** "Create a savings bucket for my motorcycle" / "Create a bucket called iPhone with goal 50000". */
 export function interpretBucketCommand(text: string, ctx: AppActionContext): AppActionInterpretation {
+  if(isFinancialAnalysisQuestion(text))return {status:"not-action"};
   const raw = text.trim();
   if (!/\b(create|add|new)\b[^.?!]*\b(bucket|savings)\b/i.test(raw) && !/\bbucket\s+(called|named|for)\b/i.test(raw)) return { status: "not-action" };
   // Contributions to an existing goal are handled by buckyActions; only creation lands here.
@@ -175,6 +181,7 @@ export function interpretBucketCommand(text: string, ctx: AppActionContext): App
 
 /** "Add two burgers to the POS cart" / "Add 2 Hakdog to cart". Hands off to POS; never checks out. */
 export function interpretPosCartCommand(text: string, ctx: AppActionContext): AppActionInterpretation {
+  if(isFinancialAnalysisQuestion(text))return {status:"not-action"};
   const raw = text.trim();
   if (!/\bcart\b/i.test(raw) || !/\b(add|put)\b/i.test(raw)) return { status: "not-action" };
   if (ctx.profile.kind !== "business") return { status: "clarification", question: `The POS cart belongs to a business profile, and "${ctx.profile.name}" is a personal profile. Switch Bucky to your business profile — nothing was added.` };
@@ -188,6 +195,7 @@ export function interpretPosCartCommand(text: string, ctx: AppActionContext): Ap
 
 /** First matching app action wins; order avoids hijacking record commands. */
 export function interpretAppAction(text: string, ctx: AppActionContext): AppActionInterpretation {
+  if(isFinancialAnalysisQuestion(text))return {status:"not-action"};
   for (const interpret of [interpretPosCartCommand, interpretStockCommand, interpretEmployeeCommand, interpretBucketCommand]) {
     const result = interpret(text, ctx);
     if (result.status !== "not-action") return result;
@@ -243,7 +251,7 @@ export function earnedOnDate(transactions: Transaction[], sales: Sale[], profile
     income.set(t.currency, (income.get(t.currency) ?? 0) + t.amountMinor);
   }
   for (const s of sales) {
-    if (s.profileId !== profileId || s.createdAt.slice(0, 10) !== date) continue;
+    if (s.profileId !== profileId || timestampLocalDate(s.createdAt) !== date) continue;
     currencies.add(s.currency);
     pos.set(s.currency, (pos.get(s.currency) ?? 0) + s.totalMinor);
   }
@@ -258,13 +266,23 @@ export function queuePosCartHandoff(storage: Pick<Storage, "setItem">, handoff: 
   storage.setItem(POS_CART_HANDOFF_KEY, JSON.stringify(handoff));
 }
 
-export function consumePosCartHandoff(storage: Pick<Storage, "getItem" | "removeItem">, profileId: string, now = Date.now()): PosCartHandoff | null {
-  try {
-    const raw = storage.getItem(POS_CART_HANDOFF_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as PosCartHandoff;
-    storage.removeItem(POS_CART_HANDOFF_KEY);
-    if (parsed.profileId !== profileId || !Array.isArray(parsed.items) || now - parsed.createdAt > 10 * 60 * 1000) return null;
-    return parsed;
-  } catch { return null; }
+export function peekPosCartHandoff(storage:Pick<Storage,'getItem'>,now=Date.now()):PosCartHandoff|null{
+ try{const value=JSON.parse(storage.getItem(POS_CART_HANDOFF_KEY)??'null') as PosCartHandoff|null;
+ if(!value||typeof value.profileId!=='string'||!value.profileId||!Number.isFinite(value.createdAt)||now-value.createdAt>600000||value.createdAt>now+1000||!Array.isArray(value.items)||!value.items.length||value.items.length>100||value.items.some(item=>typeof item.productId!=='string'||!Number.isSafeInteger(item.quantity)||item.quantity<1||item.quantity>10000))return null;
+ return value;}catch{return null;}
+}
+export function consumePosCartHandoff(storage:Pick<Storage,'getItem'|'removeItem'>,profileId:string,now=Date.now()):PosCartHandoff|null{
+ const handoff=peekPosCartHandoff(storage,now);if(!handoff||handoff.profileId!==profileId)return null;
+ storage.removeItem(POS_CART_HANDOFF_KEY);return handoff;
+}
+
+/** Resolve a financial request without choosing an unrelated default profile. */
+export function resolveBuckyRecordProfile(text:string,profiles:Profile[],context:{pageProfileId?:string;products:Product[];employees:Employee[];buckets:Bucket[]}):ProfileResolution{
+ const explicit=resolveNamedProfile(text,profiles);if(explicit.status!=='none')return explicit;
+ if(/\b(?:compare|across|all|both)\b[^.!?]*\bbusinesses\b/i.test(text))return{status:'ambiguous',profiles:profiles.filter(p=>p.kind==='business')};
+ const entities=[...context.products,...context.employees,...context.buckets].filter(item=>new RegExp('(^|[^\\p{L}\\p{N}])'+escapeProfileName(item.name)+'(?=$|[^\\p{L}\\p{N}])','iu').test(text));
+ const owners=profiles.filter(p=>entities.some(item=>item.profileId===p.id));
+ if(owners.length>1)return{status:'ambiguous',profiles:owners};if(owners.length===1)return{status:'matched',profile:owners[0]};
+ const page=profiles.find(p=>p.id===context.pageProfileId);if(page)return{status:'matched',profile:page};
+ if(profiles.length===1)return{status:'matched',profile:profiles[0]};return{status:'none'};
 }

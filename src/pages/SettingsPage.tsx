@@ -10,13 +10,14 @@ import {
   type VoiceSettings,
 } from "../lib/buckyVoiceSettings";
 import { loadOwnerProfile, onOwnerProfileChanged, saveOwnerProfile, type OwnerProfile } from "../lib/ownerProfile";
-import { getBuckyLiveSettings, subscribeBuckyLiveSettings, updateBuckyLiveSettings } from "../lib/buckyLiveSettings";
+import { getLiveAvailability, refreshLiveAvailability, subscribeLiveAvailability } from "../lib/buckyLiveSettings";
 
 export default function SettingsPage() {
   const [voice, setVoice] = useState<VoiceSettings>(() => loadVoiceSettings());
-  // Bucky live Meta AI: memory-only shared state (buckyLiveSettings).
-  // Neither the toggle nor the token is ever persisted on this device.
-  const live = useSyncExternalStore(subscribeBuckyLiveSettings, getBuckyLiveSettings, getBuckyLiveSettings);
+  // Bucky live Meta AI availability is configured on the server only
+  // and discovered from /api/health. No toggle or token lives here.
+  const live = useSyncExternalStore(subscribeLiveAvailability, getLiveAvailability, getLiveAvailability);
+  useEffect(() => { void refreshLiveAvailability(); }, []);
   const [owner, setOwner] = useState<OwnerProfile>(() => loadOwnerProfile());
   useEffect(() => onOwnerProfileChanged(setOwner), []);
   function updateOwner(patch: Partial<OwnerProfile>) {
@@ -72,35 +73,10 @@ export default function SettingsPage() {
         <div className="settings-row">
           <div>
             <strong>Live Meta AI for Bucky</strong>
-            <p className="field-hint">Off by default. When on, ordinary Bucky questions (typed or spoken) are answered by the live Meta model through Bucketa's gated server — one request per question, sharing the server's limit of 3 live requests per server session across Bucky, the Scanner, and Creative Studio. When off, Bucky answers deterministically from your recorded data and no paid request is made.</p>
+            <p className="field-hint">{!live.known ? "Checking the local server…" : live.liveAvailable ? "Configured on the server. Bucky questions are answered by the live Meta model by default — one request per question, with no Bucketa per-session request limit (your own Meta provider account limits and credits apply)." : "Not configured on the server. Set ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY in .env, then restart the server. Until then Bucky answers deterministically from your recorded data and no paid request is made."}</p>
           </div>
-          <button
-            className="btn ghost settings-toggle"
-            type="button"
-            aria-pressed={live.enabled}
-            onClick={() => updateBuckyLiveSettings({ enabled: !live.enabled })}
-          >
-            {live.enabled ? "On" : "Off"}
-          </button>
+          <span className="currency-badge" role="status">{!live.known ? "Checking…" : live.liveAvailable ? "Live Meta AI ready" : "Deterministic fallback"}</span>
         </div>
-
-        {live.enabled && (
-          <div className="settings-row settings-row-control">
-            <div>
-              <label htmlFor="bucky-live-token-setting"><strong>Live test token</strong></label>
-              <p className="field-hint">From the local server operator. Kept only in this app's memory for this session — never saved to this device, and cleared when the app reloads. Bucky cannot send live requests without it.</p>
-            </div>
-            <input
-              id="bucky-live-token-setting"
-              className="input settings-control"
-              type="password"
-              autoComplete="off"
-              value={live.token}
-              onChange={(e) => updateBuckyLiveSettings({ token: e.target.value })}
-              placeholder="Token from the local server operator"
-            />
-          </div>
-        )}
 
         <div className="settings-row">
           <div>

@@ -23,8 +23,8 @@ export const VOICE_SETTINGS_KEY = "bucketa.buckyVoiceSettings";
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   language: "en-US",
   volume: 0.9,
-  rate: 0.95,
-  pitch: 1.05,
+  rate: 1.0,
+  pitch: 1.2,
   responsesOn: true,
 };
 

@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import Icon from "../components/ui/Icon";
 import ScannerCamera from "../components/ScannerCamera";
 import PageHeader from "../components/ui/PageHeader";
@@ -440,6 +441,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [bucketId, setBucketId] = useState("");
   const [recordType, setRecordType] = useState<ScannerRecordType>("expenses");
 
@@ -454,12 +456,13 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
 
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState("");
-  const [extractionMode, setExtractionMode] = useState<ScannerExtractionMode>("mock");
-  const [liveTestToken, setLiveTestToken] = useState("");
+  // Live AI Scan is the primary (and only UI) extraction workflow.
+  // Mock extraction remains available only to automated tests via
+  // scannerApi; it is never offered or fallen back to in this UI.
+  const extractionMode: ScannerExtractionMode = "live";
   const [confirmingLiveSend, setConfirmingLiveSend] = useState(false);
   const [pendingDraftDiscard, setPendingDraftDiscard] = useState<PendingDraftDiscard | null>(null);
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
-  const [liveQuotaStale, setLiveQuotaStale] = useState(false);
   const [result, setResult] = useState<ExtractResponse | null>(null);
   const [drafts, setDrafts] = useState<ScannerDraft[]>([]);
   const [dirtyDateEditIds, setDirtyDateEditIds] = useState<ReadonlySet<string>>(new Set());
@@ -509,13 +512,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
   const activeBucket = profileBuckets.find((bucket) => bucket.id === bucketId) ?? null;
   const expectedCurrency = activeBucket?.currency ?? activeProfile?.currency ?? "PHP";
   const liveAvailable =
-    healthStatus === "ready" &&
-    !liveQuotaStale &&
-    isLiveScannerAvailable(import.meta.env.DEV, health);
-  const liveRequestsRemaining =
-    health && !liveQuotaStale
-      ? Math.max(0, health.liveRequestsLimit - health.liveRequestsUsed)
-      : null;
+    healthStatus === "ready" && isLiveScannerAvailable(health);
   const hasUnsavedDrafts = Boolean(result && saveOutcome === null && drafts.length > 0);
   const pendingRemovalDraft = pendingRemovalId
     ? drafts.find((draft) => draft.transactionId === pendingRemovalId) ?? null
@@ -621,7 +618,6 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
     try {
       const nextHealth = await fetchScannerHealth();
       setHealth(nextHealth);
-      setLiveQuotaStale(false);
       setHealthStatus("ready");
     } catch (error) {
       setHealth(null);
@@ -682,13 +678,10 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
   }, [bucketId, profileBuckets]);
 
   useEffect(() => {
-    if (healthStatus === "ready" && extractionMode === "live" && !liveAvailable) {
-      setExtractionMode("mock");
-      setLiveTestToken("");
+    if (healthStatus === "ready" && !liveAvailable) {
       setConfirmingLiveSend(false);
-      setPendingDraftDiscard(null);
     }
-  }, [healthStatus, extractionMode, liveAvailable]);
+  }, [healthStatus, liveAvailable]);
 
   function onImageSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -736,7 +729,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
       // Only discard the previous review once the new image is ready, so a
       // failed preparation keeps the current image and unsaved drafts.
       clearReview();
-      setLiveTestToken("");
+
       setPrepared(nextPrepared);
       setPreviewUrl(nextPreviewUrl);
       setFileName(file.name);
@@ -767,7 +760,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
     setPreviewUrl("");
     setFileName("");
     setImageError("");
-    setLiveTestToken("");
+
     setConfirmingLiveSend(false);
     clearReview();
     setExtractError("");
@@ -784,7 +777,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
           setConfirmingLiveSend(true);
           return;
         }
-        void startExtraction("mock");
+        void startExtraction("live");
         return;
       case "profile":
         setProfileId(action.profileId);
@@ -828,22 +821,14 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
     applyDraftChange(action);
   }
 
-  async function refreshLiveQuota() {
+  async function refreshLiveHealth() {
     try {
       const nextHealth = await fetchScannerHealth();
       setHealth(nextHealth);
-      setLiveQuotaStale(false);
       setHealthStatus("ready");
     } catch {
-      setLiveQuotaStale(true);
+      // Keep the previous health state; the error is already shown.
     }
-  }
-
-  function changeExtractionMode(mode: ScannerExtractionMode) {
-    setExtractionMode(mode);
-    setConfirmingLiveSend(false);
-    setPendingDraftDiscard(null);
-    if (mode === "mock") setLiveTestToken("");
   }
 
   function onScanButtonClick() {
@@ -856,12 +841,6 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
     const requestImage = prepared;
     const requestCurrency = expectedCurrency;
     const requestRecordType = recordType;
-    const requestToken = mode === "live" ? liveTestToken : "";
-    if (mode === "live" && requestToken.trim().length === 0) {
-      setExtractError("Enter the local live-test token before requesting a live scan.");
-      return;
-    }
-
     // Set synchronously, before any await, so rapid clicks cannot start
     // a second extraction while React state updates are still pending.
     extractionInFlightRef.current = true;
@@ -877,16 +856,8 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
           expectedCurrency: requestCurrency,
           recordType: requestRecordType,
         },
-        mode === "live"
-          ? { mode, liveTestToken: requestToken }
-          : { mode: "mock" },
+        { mode },
       );
-      if (mode === "live" && typeof nextResult.liveRequestsUsed === "number") {
-        setHealth((current) =>
-          current ? { ...current, liveRequestsUsed: nextResult.liveRequestsUsed as number } : current,
-        );
-        setLiveQuotaStale(false);
-      }
       if (nextResult.mode !== mode) {
         throw new ScannerApiError(
           "invalid_response",
@@ -919,14 +890,11 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
           ? `${message} Your previous unsaved review is still below.`
           : message,
       );
-      if (
-        mode === "live" &&
-        !(error instanceof ScannerApiError && error.code === "live_token_required")
-      ) {
-        await refreshLiveQuota();
+      if (mode === "live") {
+        await refreshLiveHealth();
       }
     } finally {
-      if (mode === "live") setLiveTestToken("");
+      if (mode === "live")
       extractionInFlightRef.current = false;
       setExtracting(false);
     }
@@ -1291,8 +1259,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
     Boolean(prepared && activeProfile) &&
     !extracting &&
     !preparing &&
-    (extractionMode === "mock" ||
-      (liveAvailable && liveTestToken.trim().length > 0));
+    liveAvailable;
 
   return (
     <section className={embedded ? "page scanner-page scanner-embedded" : "page scanner-page"}>
@@ -1302,7 +1269,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
           eyebrow="BUSINESS TOOLS"
           title="Bucky Record Scanner"
           description="Upload a record, review every entry, then confirm what gets saved."
-          actions={<span className="currency-badge">{extractionMode === "live" && liveAvailable ? "Live Meta · test" : "Mock · sample records"}</span>}
+          actions={<span className="currency-badge">{liveAvailable ? "Live AI Scan" : "Live AI not configured"}</span>}
         />
       )}
 
@@ -1311,15 +1278,18 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
         {healthStatus === "checking" && <p role="status">Checking scanner connection…</p>}
         {healthStatus === "ready" && health && (
           <>
-            <p className="notice" role="status">
-              Scanner connected. Mock mode returns fictional sample records. Live Meta extraction is used only when you select and confirm it.
-            </p>
+            {liveAvailable ? (
+              <p className="notice" role="status">
+                Live AI Scan ready. Take a photo or upload an image, confirm sending it, then review every extracted entry before saving.
+              </p>
+            ) : (
+              <p className="alert-error" role="alert">
+                Live AI Scan is not configured. Set ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY in .env, restart the server (npm run server), then reload this page. No records will be fabricated while live AI is unavailable.
+              </p>
+            )}
             <details className="help-details scanner-connection-details"><summary>Connection details</summary><p className="muted scanner-status-meta">
-              Meta live: {health.liveMeta === "enabled-gated" ? "enabled (gated)" : "disabled"} ·
-              Live requests used: {health.liveRequestsUsed} of {health.liveRequestsLimit} ·{" "}
-              {liveRequestsRemaining === null
-                ? "Remaining live quota unavailable until the connection is refreshed"
-                : `Live requests remaining: ${liveRequestsRemaining}`}
+              Meta live: {health.liveMeta === "enabled" ? "enabled" : "disabled"} ·
+              Bucketa sets no per-session live request limit; your Meta provider account limits, credits, and rate limits apply.
             </p></details>
           </>
         )}
@@ -1410,71 +1380,14 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
             scanned records cannot conflict with the selected bucket.
           </p>
 
-          {import.meta.env.DEV && (
-            <div className="scanner-mode-panel">
-              <fieldset className="scanner-mode-fieldset">
-                <legend>Extraction mode</legend>
-                <div className="scanner-mode-options">
-                  <label className="scanner-mode-option">
-                    <input
-                      type="radio"
-                      name="scanner-extraction-mode"
-                      value="mock"
-                      checked={extractionMode === "mock"}
-                      disabled={extracting || preparing}
-                      onChange={() => changeExtractionMode("mock")}
-                    />
-                    <span>
-                      <strong>Mock scan (default)</strong>
-                      <small>Uses fictional sample records; no image is sent for AI scanning.</small>
-                    </span>
-                  </label>
-                  <label className="scanner-mode-option">
-                    <input
-                      type="radio"
-                      name="scanner-extraction-mode"
-                      value="live"
-                      checked={extractionMode === "live"}
-                      disabled={extracting || preparing || !liveAvailable}
-                      onChange={() => changeExtractionMode("live")}
-                    />
-                    <span>
-                      <strong>Live AI test (local development only)</strong>
-                      <small>
-                        {liveAvailable
-                          ? "Sends the selected image through the local backend for AI scanning after confirmation."
-                          : "Unavailable unless the local backend reports gated live mode and its quota is verified."}
-                      </small>
-                    </span>
-                  </label>
-                </div>
-              </fieldset>
-              {extractionMode === "live" && liveAvailable && (
-                <div className="field scanner-token-field">
-                  <label htmlFor="scanner-live-token">Local live-test token</label>
-                  <input
-                    id="scanner-live-token"
-                    className="input"
-                    type="password"
-                    value={liveTestToken}
-                    disabled={extracting}
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(event) => {
-                      setLiveTestToken(event.target.value);
-                      setConfirmingLiveSend(false);
-                    }}
-                  />
-                  <span className="field-hint">
-                    Temporary and memory-only. It is cleared after cancellation or each live attempt and is never saved by Bucketa.
-                  </span>
-                  <span className="field-hint">
-                    Live requests remaining: {liveRequestsRemaining ?? "unavailable"}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="scanner-mode-panel">
+            <p className="field-hint">
+              <strong>Live AI Scan</strong> sends the selected image to the real Meta model through the secured local backend. Review, correct, or remove every entry, then confirm before saving. The scan uses your selected profile/bucket currency ({expectedCurrency}).
+            </p>
+            {!liveAvailable && healthStatus === "ready" && (
+              <p className="alert-error" role="alert">Live AI is unavailable: check the server configuration above. Uploading an image alone never creates records.</p>
+            )}
+          </div>
 
           <div className="scanner-capture">
             <input
@@ -1531,20 +1444,13 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
 
           <div className="row-actions">
             <button ref={scanButtonRef} className="btn" type="button" disabled={!canExtract} onClick={onScanButtonClick}>
-              {extracting
-                ? "Scanning…"
-                : extractionMode === "live"
-                  ? "Review live scan request"
-                  : "Scan in mock mode"}
+              {extracting ? "Scanning…" : "Live AI Scan"}
             </button>
             {healthStatus !== "ready" && (
               <span className="field-hint">Connect the scanner backend to enable scanning.</span>
             )}
             {!prepared && healthStatus === "ready" && (
               <span className="field-hint">Choose or take a photo to enable scanning.</span>
-            )}
-            {extractionMode === "live" && prepared && liveTestToken.trim().length === 0 && (
-              <span className="field-hint">Enter the temporary live-test token to continue.</span>
             )}
           </div>
           {pendingDraftDiscard && hasUnsavedDrafts && (
@@ -1582,7 +1488,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
                 if (event.key === "Escape") {
                   event.preventDefault();
                   setConfirmingLiveSend(false);
-                  setLiveTestToken("");
+
                 }
               }}
             >
@@ -1593,8 +1499,8 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
                 through the local Bucketa backend.
               </p>
               <p className="scanner-warning" role="note" id="scanner-live-confirm-warning">
-                This uses one live-request attempt even if extraction fails.
-                Live requests remaining before this attempt: {liveRequestsRemaining ?? "unavailable"}.
+                This uses one live-request attempt even if extraction fails, charged against your own Meta provider account.
+                Bucketa sets no per-session limit on live requests.
                 Nothing is saved automatically; you must review and confirm every entry.
               </p>
               <div className="row-actions">
@@ -1605,7 +1511,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
                   className="btn ghost"
                   type="button"
                   disabled={extracting}
-                  onClick={() => { setConfirmingLiveSend(false); setLiveTestToken(""); }}
+                  onClick={() => { setConfirmingLiveSend(false);  }}
                 >
                   Cancel
                 </button>
@@ -1618,9 +1524,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
 
       {extracting && (
         <div className="card" role="status">
-          {extractionMode === "live"
-            ? "Sending the image for AI scanning…"
-            : "Reading the record in mock mode…"}
+          {"Sending the image for Live AI Scan…"}
         </div>
       )}
 
@@ -1633,7 +1537,7 @@ export default function ScannerPage({ embedded = false, onDirtyChange, onExit }:
             </span>
           </div>
           <p className="notice" role="status">
-            {result.mode === "live" ? "Live AI scan complete" : "Mock scan complete"} for {activeProfile?.name ?? "the selected profile"} in{" "}
+            {"Live AI scan complete"} for {activeProfile?.name ?? "the selected profile"} in{" "}
             {result.currency}. Nothing is saved until you confirm the final save below.
           </p>
           <p className="scanner-warning" role="note">

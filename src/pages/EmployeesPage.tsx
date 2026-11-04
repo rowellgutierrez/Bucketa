@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import PageHeader from "../components/ui/PageHeader";
 import {
@@ -78,6 +79,7 @@ export default function EmployeesPage() {
   const [loadError, setLoadError] = useState("");
   const [businesses, setBusinesses] = useState<Profile[]>([]);
   const [businessId, setBusinessId] = useState("");
+  useBuckyPageProfile(businessId);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [notice, setNotice] = useState("");

@@ -24,15 +24,13 @@ export const errors = {
     new PublicError("live_disabled", 403, "Live Meta testing is not enabled on this server."),
   liveUnauthorized: () =>
     new PublicError("live_unauthorized", 403, "Live Meta testing was not authorized for this request."),
-  liveLimitReached: () =>
-    new PublicError("live_limit_reached", 429, "The live test request limit for this server session has been reached."),
   metaUnavailable: () =>
     new PublicError("meta_unavailable", 502, "The Meta Model API could not be reached or returned an unusable response."),
   imageEditingUnverified: () =>
     new PublicError(
       "image_editing_unverified",
       501,
-      "Live AI image editing was not enabled for this request, so no image was sent to Meta, nothing was charged, and no image was generated. Enable live mode on the server and use Generate with the live test token for a real Muse Image edit.",
+      "Live AI image editing was not enabled for this request, so no image was sent to Meta, nothing was charged, and no image was generated. Configure live Meta AI on the server (ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY), then use Generate for a real Muse Image edit.",
     ),
   notFound: () => new PublicError("not_found", 404, "Not found."),
 };

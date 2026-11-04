@@ -1,51 +1,54 @@
 /**
- * Bucky live Meta AI settings — MEMORY ONLY.
+ * Bucky live Meta AI availability — discovered from the backend.
  *
- * The enable toggle and the live test token live in this module's memory
- * for the current app session only. They are never written to
- * localStorage, IndexedDB, a URL, logs, or source files, and they clear
- * when the app reloads. Default is OFF: Bucky answers deterministically
- * until the user explicitly enables live mode in Settings → Bucky & Voice
- * and enters the operator's token there.
+ * Live mode is configured ONLY on the server (ENABLE_LIVE_META=1 plus
+ * a server-side MODEL_API_KEY). The browser never holds a Meta
+ * credential and never asks the user for a temporary token. This
+ * module caches the /api/health result for the current session: when
+ * the backend reports liveMeta "enabled", Bucky uses the real Meta
+ * model by default; otherwise Bucky answers with a clearly labelled
+ * deterministic fallback and no paid request is made.
  */
 
-export interface BuckyLiveSettings {
-  enabled: boolean;
-  token: string;
+export interface LiveAvailability {
+  /** False until the first health check completes. */
+  known: boolean;
+  liveAvailable: boolean;
 }
 
-const DEFAULT_SETTINGS: BuckyLiveSettings = { enabled: false, token: "" };
-
-let current: BuckyLiveSettings = { ...DEFAULT_SETTINGS };
+let current: LiveAvailability = { known: false, liveAvailable: false };
 const listeners = new Set<() => void>();
 
-export function getBuckyLiveSettings(): BuckyLiveSettings {
+export function getLiveAvailability(): LiveAvailability {
   return current;
 }
 
-export function subscribeBuckyLiveSettings(listener: () => void): () => void {
+export function subscribeLiveAvailability(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-export function updateBuckyLiveSettings(patch: Partial<BuckyLiveSettings>): BuckyLiveSettings {
-  current = { ...current, ...patch };
+function setAvailability(next: LiveAvailability): LiveAvailability {
+  current = next;
   for (const listener of listeners) listener();
   return current;
 }
 
-/** Live only when the user enabled it AND a runtime token is present. */
-export function buckyAdviceMode(settings: BuckyLiveSettings): "live" | "fallback" {
-  return settings.enabled && settings.token.trim().length > 0 ? "live" : "fallback";
+/** Fetch backend health once and cache whether live Meta AI is configured. Never throws. */
+export async function refreshLiveAvailability(fetchImpl: typeof fetch = fetch): Promise<LiveAvailability> {
+  try {
+    const response = await fetchImpl("/api/health");
+    if (!response.ok) throw new Error("health");
+    const body = (await response.json()) as { liveMeta?: unknown };
+    return setAvailability({ known: true, liveAvailable: body.liveMeta === "enabled" });
+  } catch {
+    return setAvailability({ known: true, liveAvailable: false });
+  }
 }
 
-/** Why a question was not sent live, or null when it can be. */
-export function buckyLiveUnavailableNote(settings: BuckyLiveSettings): string | null {
-  if (!settings.enabled) return null;
-  if (!settings.token.trim()) {
-    return "Live Meta AI is on, but no live test token is entered in Settings → Bucky & Voice, so Bucky answered deterministically and no paid request was made.";
-  }
-  return null;
+/** Live only when the backend reports live Meta AI configured. */
+export function buckyAdviceMode(availability: LiveAvailability): "live" | "fallback" {
+  return availability.liveAvailable ? "live" : "fallback";
 }
 
 /**
@@ -59,12 +62,15 @@ export function describeAdviceSource(res: {
   diagnostic?: { category: string; upstreamStatus: number | null; subReason?: string | null };
 }): string {
   if (res.source === "meta-live") {
-    return `Answered by live Meta AI${res.model ? ` (${res.model})` : ""}, validated server-side against your recorded figures.`;
+    // No visible status line for a genuine live answer: the answer
+    // itself is the conversation content. Provenance text is only
+    // shown when a fallback was used, so it is never mislabelled.
+    return "";
   }
   if (res.diagnostic) {
     return "Live Meta AI was attempted, but its answer was unavailable or failed validation, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.";
   }
-  return "Answered deterministically from your recorded data. Live Meta AI was not used, so no paid request was made.";
+  return "Answered deterministically from your recorded data. Live Meta AI is not configured on the server, so no paid request was made.";
 }
 
 /**

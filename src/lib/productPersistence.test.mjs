@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { productsRepo, completeSale, salesRepo } from '../data/db.ts';
 import { addToCart, buildSaleItems, buildSale } from './pos.ts';
 // In-memory IndexedDB scheduling double. No browser or persistent storage.
-const data = { products: new Map(), sales: new Map() };
+const data = { products: new Map(), sales: new Map(), profiles:new Map([['biz',{id:'biz',kind:'business',currency:'PHP'}],['other',{id:'other',kind:'business',currency:'PHP'}]]) };
 let queue = Promise.resolve();
 function transaction(names) {
   const stores = Array.isArray(names) ? names : [names];

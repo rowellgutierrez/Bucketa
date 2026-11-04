@@ -19,3 +19,11 @@ export function setBuckyDraft(value: string): void {
 export function subscribeBuckyDraft(listener: () => void): () => void {
  draftListeners.add(listener); return () => {draftListeners.delete(listener);};
 }
+
+export function scopedBuckyHistory<T extends {profileId?:string;role:'user'|'bucky';text:string}>(messages:readonly T[],profileId:string){return messages.filter(message=>(message.profileId??'')===profileId).slice(-6).map(message=>({role:message.role,text:message.text.slice(0,500)}));}
+
+/** Accept once before async work; a late response never clears a newer draft. */
+export function createBuckySubmissionGate(){
+ let pending=false;
+ return {accept(text:string,requireDraftMatch=true){const question=text.trim();if(pending||!question||(requireDraftMatch&&getBuckyDraft().trim()!==question))return null;pending=true;if(getBuckyDraft().trim()===question)setBuckyDraft('');let finished=false;return{question,finish(){if(!finished){finished=true;pending=false;}}};}};
+}

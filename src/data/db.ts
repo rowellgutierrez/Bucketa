@@ -114,13 +114,46 @@ function tx<T>(
       new Promise<T>((resolve, reject) => {
         const transaction = db.transaction(storeName, mode);
         const request = run(transaction.objectStore(storeName));
-        request.onsuccess = () => resolve(request.result);
+        let result:T;
+        request.onsuccess = () => {result=request.result;};
+        transaction.oncomplete=()=>resolve(result);
+        transaction.onabort=()=>reject(new BucketaDataError(`Database transaction aborted (${storeName}).`));
         request.onerror = () =>
           reject(new BucketaDataError(`Database operation failed (${storeName}).`));
         transaction.onerror = () =>
           reject(new BucketaDataError(`Database transaction failed (${storeName}).`));
       }),
   );
+}
+
+/** Reference checks and the write share one transaction; no schema changes. */
+function writeOwnedRecord<T extends {id:string;createdAt:string;updatedAt:string}>(storeName:StoreName,id:string,input:T|Partial<T>,validate:(record:T)=>T,creating:boolean):Promise<T>{
+ return openDb().then(db=>new Promise((resolve,reject)=>{
+  const transaction=db.transaction(['profiles','buckets','employees','sales','transactions'],'readwrite');
+  let result:T,failure:unknown;
+  transaction.oncomplete=()=>resolve(result);
+  transaction.onabort=transaction.onerror=()=>reject(failure??new BucketaDataError('Record write failed. Nothing was saved.'));
+  const fail=(error:unknown)=>{failure=error;transaction.abort();};
+  const store=transaction.objectStore(storeName),request=store.get(id);
+  request.onsuccess=()=>{try{
+   const existing=request.result;if(!creating&&!existing)throw new BucketaDataError('Record no longer exists.');
+   result=validate((creating?{...input}:{...existing,...input,id,profileId:existing.profileId,createdAt:existing.createdAt,updatedAt:nowIso()}) as T);
+   const row=result as unknown as {profileId:string;currency?:string;bucketId?:string|null;relatedId?:string|null;category?:string|null;origin?:string;type?:string};
+   const owner=transaction.objectStore('profiles').get(row.profileId);
+   owner.onsuccess=()=>{try{
+    const profile=owner.result as Profile|undefined;if(!profile)throw new BucketaDataError('Profile no longer exists.');
+    if(row.currency&&row.currency!==profile.currency)throw new BucketaDataError('Record currency does not match its profile.');
+    if(storeName==='employees'&&profile.kind!=='business')throw new BucketaDataError('Employees require a business profile.');
+    const refs:[StoreName,string][]=[];
+    if(row.bucketId)refs.push(['buckets',row.bucketId]);
+    if(storeName==='transactions'&&row.relatedId&&['Salaries','Bonuses','Advances'].includes(row.category??''))refs.push(['employees',row.relatedId]);
+    if(storeName==='transactions'&&row.origin==='pos'&&row.relatedId)refs.push(['sales',row.relatedId]);
+    if(storeName==='transactions'&&['savings-deposit','savings-withdrawal'].includes(row.type??'')&&!row.bucketId)throw new BucketaDataError('Savings records require a bucket.');
+    let pending=refs.length;const save=()=>{if(creating)store.add(result);else store.put(result);};if(!pending){save();return;}
+    refs.forEach(([name,key])=>{const ref=transaction.objectStore(name).get(key);ref.onsuccess=()=>{try{const linked=ref.result;if(!linked||linked.profileId!==row.profileId||(linked.currency&&linked.currency!==row.currency))throw new BucketaDataError('Related record is missing or belongs to another profile/currency.');if(name==='buckets'&&['savings-deposit','savings-withdrawal'].includes(row.type??'')&&linked.kind!=='savings')throw new BucketaDataError('Savings records require a savings bucket.');if(!--pending)save();}catch(error){fail(error);}};});
+   }catch(error){fail(error);}};
+  }catch(error){fail(error);}};
+ }));
 }
 
 interface Repository<T extends { id: string; createdAt: string; updatedAt: string }> {
@@ -140,6 +173,7 @@ function createRepository<T extends { id: string; createdAt: string; updatedAt: 
   return {
     async create(record) {
       validate(record);
+      if(["buckets","employees","transactions"].includes(storeName))return writeOwnedRecord(storeName,record.id,record,validate,true);
       await tx(storeName, "readwrite", (s) => s.add(record));
       return record;
     },
@@ -166,6 +200,7 @@ function createRepository<T extends { id: string; createdAt: string; updatedAt: 
       );
     },
     async update(id, patch) {
+      if(["buckets","employees","transactions"].includes(storeName))return writeOwnedRecord(storeName,id,patch,validate,false);
       const existing = await this.getById(id);
       if (!existing) throw new BucketaDataError(`Record not found (${storeName}/${id}).`);
       const next: T = {
@@ -534,26 +569,13 @@ export function saveScannerTransactions(args: {
 
 /**
  * Creates one transaction and resolves only when the IndexedDB
- * transaction has COMMITTED (transaction.oncomplete), unlike the generic
- * repository create() which resolves on request success. Use this when a
+ * transaction has COMMITTED (transaction.oncomplete), as do validated repository writes. Use this when a
  * caller must know the record is durably saved before reacting to it —
  * e.g. firing a confirmed savings deposit/withdrawal mascot event.
  * Rejects on transaction error or abort, when nothing was committed.
  */
-export function createTransactionConfirmed(record: Transaction): Promise<Transaction> {
-  validateTransaction(record);
-  return openDb().then(
-    (db) =>
-      new Promise<Transaction>((resolve, reject) => {
-        const transaction = db.transaction("transactions", "readwrite");
-        transaction.oncomplete = () => resolve(record);
-        transaction.onerror = () =>
-          reject(new BucketaDataError("The record could not be saved. Nothing was saved."));
-        transaction.onabort = () =>
-          reject(new BucketaDataError("The record save was cancelled. Nothing was saved."));
-        transaction.objectStore("transactions").add(record);
-      }),
-  );
+export function createTransactionConfirmed(record:Transaction):Promise<Transaction>{
+ validateTransaction(record);return writeOwnedRecord('transactions',record.id,record,validateTransaction,true);
 }
 
 export const profilesRepo = createRepository<Profile>("profiles", validateProfile, { byProfile: false });
@@ -564,7 +586,7 @@ const baseProductsRepo = createRepository<Product>("products", validateProduct);
 /** Check and write in one serialized transaction, including across tabs. */
 function writeProduct(id: string, input: Product | Partial<Product>, creating: boolean): Promise<Product> {
   return openDb().then(db => new Promise((resolve, reject) => {
-    const transaction = db.transaction("products", "readwrite");
+    const transaction = db.transaction(["products","profiles"], "readwrite");
     const store = transaction.objectStore("products");
     let result: Product;
     let failure: unknown;
@@ -580,10 +602,31 @@ function writeProduct(id: string, input: Product | Partial<Product>, creating: b
         result.barcode = normalizeBarcode(result.barcode) || null;
         validateProduct(result);
         if (findBarcodeConflict(products, result.profileId, result.barcode, creating ? "" : id)) throw new BucketaDataError("This barcode is already assigned in this business.");
-        if (creating) store.add(result); else store.put(result);
+        const owner=transaction.objectStore('profiles').get(result.profileId);
+        owner.onsuccess=()=>{try{if(!owner.result||owner.result.kind!=='business'||owner.result.currency!==result.currency)throw new BucketaDataError('Product requires a matching business and currency.');if(creating)store.add(result);else store.put(result);}catch(error){failure=error;transaction.abort();}};
       } catch (error) { failure = error; transaction.abort(); }
     };
   }));
+}
+/** Serialized stock delta and idempotency receipt, in existing stores. */
+export function incrementProductStock(args:{id:string;profileId:string;currency:string;delta:number;actionId:string}):Promise<Product>{
+ if(!args.actionId||!Number.isSafeInteger(args.delta)||args.delta<=0)return Promise.reject(new BucketaDataError('Stock increment must be a positive safe integer with an action ID.'));
+ return openDb().then(db=>new Promise((resolve,reject)=>{
+  const transaction=db.transaction(['profiles','products','settings'],'readwrite');let result:Product,failure:unknown;
+  transaction.oncomplete=()=>resolve(result);transaction.onabort=transaction.onerror=()=>reject(failure??new BucketaDataError('Stock update failed.'));
+  const profileRequest=transaction.objectStore('profiles').get(args.profileId),productRequest=transaction.objectStore('products').get(args.id),receiptRequest=transaction.objectStore('settings').get('stock-adjustment:'+args.actionId);let pending=3;
+  const finish=()=>{if(--pending)return;try{
+   const owner=profileRequest.result as Profile|undefined,current=productRequest.result as Product|undefined,receipt=receiptRequest.result;
+   if(!owner||owner.kind!=='business'||owner.currency!==args.currency||!current||current.profileId!==owner.id||current.currency!==owner.currency||current.status==='archived')throw new BucketaDataError('Product/business is missing, archived or mismatched.');
+   validateProduct(current);
+   if(receipt){if(receipt.productId!==args.id||receipt.profileId!==args.profileId||receipt.currency!==args.currency||receipt.delta!==args.delta)throw new BucketaDataError('Adjustment ID was already used for different arguments.');result=current;return;}
+   result=validateProduct({...current,stock:current.stock+args.delta,updatedAt:nowIso()});
+   if(!Number.isSafeInteger(result.stock))throw new BucketaDataError('Resulting stock is invalid.');
+   transaction.objectStore('products').put(result);
+   transaction.objectStore('settings').add({id:'stock-adjustment:'+args.actionId,productId:args.id,profileId:args.profileId,currency:args.currency,delta:args.delta});
+  }catch(error){failure=error;transaction.abort();}};
+  profileRequest.onsuccess=productRequest.onsuccess=receiptRequest.onsuccess=finish;
+ }));
 }
 export const productsRepo = {
   ...baseProductsRepo,

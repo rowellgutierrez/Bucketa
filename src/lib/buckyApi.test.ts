@@ -1,3 +1,4 @@
+import {buildBuckyConversationSummary} from './buckyAgent.ts';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BuckyApiError, requestBuckyAdvice, requestBuckyInterpret, type BuckyInterpretContext, type BuckyModelSummary } from "./buckyApi.ts";
@@ -69,36 +70,34 @@ test("fallback advice posts only the aggregated summary and returns labelled sou
   );
 });
 
-test("live advice without a runtime token fails before any fetch", async () => {
-  let calls = 0;
-  await withFetch(
-    async () => {
-      calls += 1;
-      throw new Error("must not be called");
-    },
-    async () => {
-      await assert.rejects(
-        () => requestBuckyAdvice("Why?", summary, { mode: "live" }),
-        (e: unknown) => e instanceof BuckyApiError && e.code === "live_token_required",
-      );
-      assert.equal(calls, 0);
-    },
-  );
-});
-
-test("live advice forwards the runtime token only as a header", async () => {
-  let seenToken = "";
+test("live advice needs no user token and sends none", async () => {
   await withFetch(
     async (_input, init) => {
-      seenToken = new Headers(init?.headers).get("x-bucketa-live-test") ?? "";
+      assert.equal(new Headers(init?.headers).get("x-bucketa-live-test"), null);
       return new Response(
         JSON.stringify({ ...adviceBody, source: "meta-live", model: "muse-spark-1.3" }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     },
     async () => {
-      const res = await requestBuckyAdvice("Why?", summary, { mode: "live", liveTestToken: "rt-token" });
-      assert.equal(seenToken, "rt-token");
+      const res = await requestBuckyAdvice("Why?", summary, { mode: "live" });
+      assert.equal(res.source, "meta-live");
+    },
+  );
+});
+
+test("live advice body never carries a credential", async () => {
+  await withFetch(
+    async (_input, init) => {
+      const body = String(init?.body ?? "");
+      assert.equal(body.includes("token"), false);
+      return new Response(
+        JSON.stringify({ ...adviceBody, source: "meta-live", model: "muse-spark-1.3" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+    async () => {
+      const res = await requestBuckyAdvice("Why?", summary, { mode: "live" });
       assert.equal(res.source, "meta-live");
     },
   );
@@ -144,16 +143,15 @@ const interpretContext: BuckyInterpretContext = {
   employeeNames: ["Roger"],
 };
 
-test("interpret requires a runtime token before any network call", async () => {
-  let called = 0;
+test("interpret needs no user token", async () => {
   await withFetch(
-    async () => { called += 1; return new Response("{}"); },
+    async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get("x-bucketa-live-test"), null);
+      return new Response(JSON.stringify({ source: "deterministic", model: null, proposal: null }), { status: 200 });
+    },
     async () => {
-      await assert.rejects(
-        () => requestBuckyInterpret("Pay Roger ₱1,000 salary", interpretContext),
-        (e: unknown) => e instanceof BuckyApiError && e.code === "live_token_required",
-      );
-      assert.equal(called, 0);
+      const res = await requestBuckyInterpret("Pay Roger salary", interpretContext);
+      assert.equal(res.proposal, null);
     },
   );
 });
@@ -181,7 +179,7 @@ test("interpret posts only text and names, and validates the response shape", as
       }), { status: 200 });
     },
     async () => {
-      const res = await requestBuckyInterpret("Roger got his ₱1,000 salary", interpretContext, { liveTestToken: "runtime-only" });
+      const res = await requestBuckyInterpret("Roger got his ₱1,000 salary", interpretContext);
       assert.equal(res.proposal?.employeeName, "Roger");
       assert.ok(seenUrl.endsWith("/api/bucky/interpret"));
       const body = JSON.parse(seenBody) as Record<string, unknown>;
@@ -199,9 +197,13 @@ test("interpret posts only text and names, and validates the response shape", as
     async () => new Response(JSON.stringify({ source: "meta-live", model: null, proposal: { kind: "expense", amountMinor: "lots" } }), { status: 200 }),
     async () => {
       await assert.rejects(
-        () => requestBuckyInterpret("Spent ₱500", interpretContext, { liveTestToken: "runtime-only" }),
+        () => requestBuckyInterpret("Spent ₱500", interpretContext),
         (e: unknown) => e instanceof BuckyApiError && e.code === "invalid_response",
       );
     },
   );
+});
+
+test('General live request sends no profile data and needs no user token',async()=>{
+ await withFetch(async(_url,init)=>{const body=JSON.parse(String(init?.body));assert.equal(body.summary.conversationOnly,true);assert.deepEqual(body.summary.currencies,[]);assert.deepEqual(body.summary.savingsGoals,[]);assert.equal(JSON.stringify(body).includes('Sofia'),false);assert.equal(JSON.stringify(body).toLowerCase().includes('token'),false);return new Response(JSON.stringify({source:'meta-live',model:'muse-spark-1.3',answer:'Hello',explanation:'General response',evidence:[],suggestedActions:[],limitations:[]}),{status:200});},async()=>{const result=await requestBuckyAdvice('What can you do?',buildBuckyConversationSummary(),{mode:'live'});assert.equal(result.source,'meta-live');});
 });

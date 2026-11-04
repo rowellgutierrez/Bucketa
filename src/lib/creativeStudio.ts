@@ -89,21 +89,17 @@ export interface CreativeStatus {
 }
 
 /**
- * One user-initiated live generation. Requires the runtime live test
- * token (memory-only, supplied by the server operator) — without it
- * this fails BEFORE any network call, exactly like the scanner.
- * Never retries automatically.
+ * One user-initiated live generation. Live access is configured on
+ * the server only (ENABLE_LIVE_META=1 + MODEL_API_KEY + loopback
+ * origin); the browser sends no token. Never retries automatically.
+ * A placeholder is never returned as a generated image.
  */
-export async function requestCreativeEdit(payload: CreativeEditPayload, options: { liveTestToken?: string } = {}, fetchImpl: typeof fetch = fetch): Promise<{ dataUrl: string }> {
-  const token = options.liveTestToken;
-  if (!token || token.trim().length === 0) {
-    throw new Error("Enter the live test token from the local server operator before generating. Nothing was sent and nothing was charged.");
-  }
+export async function requestCreativeEdit(payload: CreativeEditPayload, fetchImpl: typeof fetch = fetch): Promise<{ dataUrl: string }> {
   let response: Response;
   try {
     response = await fetchImpl("/api/creative/edit", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": token },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...payload, mode: "live" }),
     });
   } catch {

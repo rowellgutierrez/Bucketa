@@ -118,16 +118,15 @@ test("non-diagnostic errors collapse to unknown with no leaked details", () => {
 
 test("live advise endpoint returns a safe diagnostic category on upstream failure", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   const server = createAppServer(
-    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true },
+    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true },
     { fetchImpl: httpResponse(401, "SECRET upstream body") },
   );
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const res = await fetch(`http://127.0.0.1:${server.address().port}/api/bucky/advise`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": "test-token-not-real" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: "How is my cash flow?", mode: "live", summary }),
     });
     const json = await res.json();
@@ -138,6 +137,5 @@ test("live advise endpoint returns a safe diagnostic category on upstream failur
   } finally {
     await new Promise((resolve) => server.close(resolve));
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
   }
 });

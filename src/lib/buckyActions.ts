@@ -76,7 +76,7 @@ const SYMBOL_CURRENCIES: Record<string, string> = {
   "₱": "PHP", "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "₩": "KRW",
 };
 const QUESTION_START = /^(how|what|why|when|which|who|do|does|did|is|are|can|could|show|tell|give me)\b/i;
-const IMPERATIVE_START = /^(record|add|log|pay|paid|deposit|contribute|put|spent|received|earned|create|save)\b/i;
+const IMPERATIVE_START = /^(increase|restock|raise|record|add|log|pay|paid|deposit|contribute|put|spent|received|earned|create|save)\b/i;
 
 /**
  * Read-only financial analysis questions ("Summarize my recorded income…",
@@ -87,18 +87,18 @@ const IMPERATIVE_START = /^(record|add|log|pay|paid|deposit|contribute|put|spent
  * every write safeguard and confirmation stays intact.
  */
 export function isFinancialAnalysisQuestion(text: string): boolean {
-  const raw = text.trim();
+  const raw = text.trim().replace(/^(?:(?:hey|hi)\s+)?bucky[,\s:]+/i,'').replace(/^please\s+/i,'');
   if (!raw) return false;
   if (IMPERATIVE_START.test(raw)) return false;
   const lower = raw.toLowerCase();
   const financialTopic =
-    /\b(income|expenses?|spending|cash flow|finances?|financial|revenue|sales|savings|goals?|buckets?|categories|budget|summary|overview)\b/.test(lower);
+    /\b(income|expenses?|spending|cash flow|finances?|financial|revenue|sales|savings|goals?|buckets?|categories|budget|summary|overview|stock|inventory|products?|employees?|salary|salaries|bonus|advance|profit)\b/.test(lower);
   if (!financialTopic) return false;
   const analysisLead =
     /^(summarize|summarise|analyze|analyse|explain|describe|review|compare|break down|show|tell|list|report)\b/i.test(raw);
   const analysisPhrase =
     /\b(financial summary|summary of|overview of|net cash flow|income, expenses|income and expenses|analyze my|analyse my|summarize my|summarise my)\b/.test(lower);
-  return analysisLead || analysisPhrase || raw.includes("?") || QUESTION_START.test(raw);
+  return analysisLead || analysisPhrase || /^(should|would|might|ought|is it|do you recommend)\b/i.test(raw) || raw.includes("?") || QUESTION_START.test(raw);
 }
 
 function pad(n: number): string {
@@ -715,7 +715,7 @@ export function interpretBuckyProductCommand(
   ctx: BuckyProductContext,
 ): BuckyProductInterpretation {
   const raw = text.trim();
-  if (!raw) return { status: "not-action" };
+  if (!raw || isFinancialAnalysisQuestion(raw)) return { status: "not-action" };
   if (QUESTION_START.test(raw) && !IMPERATIVE_START.test(raw)) return { status: "not-action" };
   if (!PRODUCT_INTENT.test(raw)) return { status: "not-action" };
 

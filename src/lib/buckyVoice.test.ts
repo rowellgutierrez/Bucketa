@@ -141,19 +141,24 @@ test("trailing silence ends listening only after the full quiet window", () => {
 
 test("auto-processing after speech requires a clean, non-cancelled settle", () => {
   assert.equal(shouldAutoProcessTranscript({ heard: "record 500 expense", errorCode: "", cancelled: false }), true);
-  // After an error the transcript may be incomplete: review only, never auto-run.
+  // After a genuine error the transcript may be incomplete: it is
+  // discarded, never auto-run and never parked for manual approval.
   assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "network", cancelled: false }), false);
-  assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "no-speech", cancelled: false }), false);
+  // Benign settle errors after captured speech still auto-process: the
+  // browser fires these on trailing silence / teardown, not on failure.
+  assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "no-speech", cancelled: false }), true);
+  assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "aborted", cancelled: false }), true);
+  assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "audio-capture", cancelled: false }), false);
   assert.equal(shouldAutoProcessTranscript({ heard: "record 500", errorCode: "", cancelled: true }), false);
   assert.equal(shouldAutoProcessTranscript({ heard: "   ", errorCode: "", cancelled: false }), false);
   assert.equal(shouldAutoProcessTranscript({ heard: "", errorCode: "", cancelled: false }), false);
 });
 
 test("Bucky voice tuning stays warm and subtle, never squeaky", () => {
-  assert.deepEqual(buckyUtteranceTuning({ rate: 0.95, pitch: 1.05 }), { rate: 0.95, pitch: 1.05 });
-  assert.deepEqual(buckyUtteranceTuning({ rate: 1.5, pitch: 1.5 }), { rate: 1.02, pitch: 1.12 });
-  assert.deepEqual(buckyUtteranceTuning({ rate: 0.5, pitch: 0.5 }), { rate: 0.9, pitch: 1.0 });
-  assert.deepEqual(buckyUtteranceTuning({ rate: Number.NaN, pitch: Number.NaN }), { rate: 0.95, pitch: 1.05 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: 0.95, pitch: 1.05 }), { rate: 0.95, pitch: 1.15 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: 1.5, pitch: 1.5 }), { rate: 1.05, pitch: 1.25 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: 0.5, pitch: 0.5 }), { rate: 0.95, pitch: 1.15 });
+  assert.deepEqual(buckyUtteranceTuning({ rate: Number.NaN, pitch: Number.NaN }), { rate: 1.0, pitch: 1.2 });
 });
 
 test("preferred synthesis voice ranks natural English voices first", () => {
@@ -232,4 +237,17 @@ test("voice phase labels cover Listening, Thinking, Speaking and Error", () => {
 
 test('Pending review/confirmation blocks capture without executing any action',()=>{
  const h=sessionHarness();let starts=0,blocked=true;h.session.start();h.session.resume(()=>!blocked,()=>starts++);h.flush();assert.equal(starts,0);blocked=false;h.session.resume(()=>!blocked,()=>starts++);h.flush();assert.equal(starts,1);
+});
+
+test("BuckyPanel has no transcript review/Run approval workflow", async () => {
+  const { readFileSync } = await import("node:fs");
+  const panel = readFileSync(new URL("../components/BuckyPanel.tsx", import.meta.url), "utf8");
+  assert.equal(panel.includes("wasn't run automatically"), false);
+  assert.equal(panel.includes("Run this transcript"), false);
+  assert.equal(panel.includes("Speech stopped early"), false);
+  assert.equal(panel.includes("bucky-voice-review"), false);
+  assert.equal(panel.includes('setVoicePhase("review")'), false);
+  assert.equal(panel.includes("offerTranscriptForReview"), false);
+  // Write confirmations remain: previews still require explicit Confirm.
+  assert.match(panel, /Confirm save/);
 });

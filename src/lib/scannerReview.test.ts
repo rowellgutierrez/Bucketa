@@ -27,7 +27,7 @@ const stamp = "2026-10-27T00:00:00.000Z";
 
 function response(): ExtractResponse {
   return {
-    mode: "mock",
+    mode: "live",
     recordType: "expenses",
     currency: "PHP",
     documentTotalText: null,

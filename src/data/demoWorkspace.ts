@@ -73,3 +73,45 @@ export async function updateFictionalDemo(backup:LocalBackup){
  const {patch,ids}=planDemoUpdate(backup);if(!ids.size)return 0;
  await atomicChange(backup,row=>ids.has(row.id),patch);return ids.size;
 }
+
+/**
+ * Pure plan for the judge demo initialization. Idempotent: when every
+ * demo record already exists, the plan is already-installed and carries
+ * no writes. When no demo records exist, it carries the full USD
+ * dataset. When a workspace is PARTIALLY installed (e.g. demo profiles
+ * created by an older/incomplete load but their financial records are
+ * missing), it carries only the demo records whose IDs are absent —
+ * so re-running initialization repairs the workspace, adds the missing
+ * income/expense/sales/salary records, never duplicates a record, and
+ * never overwrites existing rows (demo or user).
+ */
+export function planJudgeDemoInitialization(backup:LocalBackup){
+ const expected=createDemoDataset().data;
+ const stores=Object.keys(expected) as (keyof DemoDataset)[];
+ const missing={} as DemoDataset;let present=0,missingCount=0;
+ for(const store of stores){
+  const existingIds=new Set(backup.stores[store].map(row=>row.id));
+  const rows=(expected[store] as unknown as Row[]).filter(row=>!existingIds.has(row.id));
+  present+=(expected[store] as unknown as Row[]).length-rows.length;missingCount+=rows.length;
+  missing[store]=rows as never;
+ }
+ if(missingCount===0)return {status:'already-installed' as const,data:null as DemoDataset|null};
+ if(present===0 && !backup.stores.profiles.some(row=>row.id.startsWith(DEMO_PREFIX)))return {status:'ready' as const,data:expected};
+ return {status:'repair' as const,data:missing};
+}
+
+/**
+ * Explicit, safe, idempotent judge demo initialization.
+ * Reads the current workspace, refuses to duplicate the demo, and
+ * atomically adds only demo-prefixed records. Existing user records
+ * are preserved untouched (remove predicate always false).
+ */
+export async function initializeJudgeDemoWorkspace(){
+ const current=await readLocalBackup();
+ const plan=planJudgeDemoInitialization(current);
+ if(plan.status==='already-installed'||!plan.data){
+  return {status:'already-installed' as const,counts:Object.fromEntries(Object.entries(createDemoDataset().data).map(([store])=>[store,current.stores[store as keyof DemoDataset].filter(row=>row.id.startsWith(DEMO_PREFIX)).length])) as Record<string,number>};
+ }
+ await atomicChange(current,()=>false,plan.data as unknown as Record<keyof DemoDataset,Row[]>);
+ return {status:plan.status==='repair'?'repaired' as const:'installed' as const,counts:Object.fromEntries(Object.entries(plan.data).map(([store,records])=>[store,(records as unknown[]).length])) as Record<string,number>};
+}

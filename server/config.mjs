@@ -14,17 +14,12 @@ export function getConfig(env = process.env) {
     port: Number.isInteger(port) && port > 0 ? port : 8787,
     modelApiKeyConfigured: Boolean(env.MODEL_API_KEY && env.MODEL_API_KEY.trim()),
     liveMetaEnabled: env.ENABLE_LIVE_META === "1",
-    liveTestTokenConfigured: Boolean(env.LIVE_TEST_TOKEN && env.LIVE_TEST_TOKEN.trim()),
   };
 }
 
 /** Read the key only when a gated live request actually needs it. */
 export function getModelApiKey(env = process.env) {
   return typeof env.MODEL_API_KEY === "string" ? env.MODEL_API_KEY.trim() : "";
-}
-
-export function getLiveTestToken(env = process.env) {
-  return typeof env.LIVE_TEST_TOKEN === "string" ? env.LIVE_TEST_TOKEN.trim() : "";
 }
 
 /**

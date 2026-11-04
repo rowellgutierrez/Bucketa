@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import PageHeader from "../components/ui/PageHeader";
 import Icon from "../components/ui/Icon";
 import BrandedFolder from "../components/BrandedFolder";
@@ -64,6 +65,7 @@ export default function BucketsPage() {
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [bucketCounts, setBucketCounts] = useState<Record<string, number>>({});
 

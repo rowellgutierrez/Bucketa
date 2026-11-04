@@ -562,3 +562,7 @@ test("add product: an existing same-name product warns instead of hiding", () =>
   assert.equal(otherBusiness.status, "proposal");
   if (otherBusiness.status === "proposal") assert.deepEqual(otherBusiness.product.warnings, []);
 });
+
+test('Stock, employee, product and savings advisory questions are never write commands',()=>{
+ for(const q of ['Should I increase Burger stock by 10?','Should I add an employee named Roger?','Which products should I add?','Would adding money to my savings help?','Summarize my PHP income and expenses.']){assert.equal(isFinancialAnalysisQuestion(q),true,q);assert.equal(interpretBuckyAction(q,ctx()).status,'not-action',q);assert.equal(interpretBuckyProductCommand(q,productCtx()).status,'not-action',q);}
+});

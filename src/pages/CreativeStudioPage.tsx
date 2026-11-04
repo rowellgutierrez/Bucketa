@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import PageHeader from "../components/ui/PageHeader";
+import ScannerCamera from "../components/ScannerCamera";
 import Card from "../components/ui/Card";
 import { productsRepo, profilesRepo } from "../data/db";
 import type { Product, Profile } from "../data/types";
@@ -27,13 +28,13 @@ function readAsDataUrl(file: File): Promise<string> {
 }
 
 /**
- * Bucky Creative Studio — ChatGPT-style conversational AI image editor.
- * Upload/take a photo, describe the change, generate, then keep refining
- * the latest result. Real generation happens only through
- * POST /api/creative/edit; while Meta image editing is unverified for
- * this account the server refuses before any paid call and this page
- * says so plainly — no local filter or mock is ever shown as AI output.
- * The original upload is always preserved.
+ * Bucky Creative Studio — conversational AI image editor.
+ * Upload Image (file picker) and Take Photo (real in-app camera via
+ * getUserMedia) are separate workflows. Describe the change, generate,
+ * then keep refining the latest result. Real generation happens only
+ * through POST /api/creative/edit when live Meta AI is configured on
+ * the server; no token is entered here, and no local filter, mock, or
+ * placeholder is ever shown as an AI result. The original is preserved.
  */
 export default function CreativeStudioPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -47,7 +48,7 @@ export default function CreativeStudioPage() {
   const [turns, setTurns] = useState<StudioTurn[]>([]);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [liveToken, setLiveToken] = useState("");
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saveProductId, setSaveProductId] = useState("");
@@ -93,7 +94,7 @@ export default function CreativeStudioPage() {
     setGenerating(true);
     setError("");
     try {
-      const { dataUrl } = await requestCreativeEdit(payload, { liveTestToken: liveToken });
+      const { dataUrl } = await requestCreativeEdit(payload);
       setTurns((prev) => [...prev, { id: nextTurnId(), prompt: payload.prompt, resultDataUrl: dataUrl, status: "done" }]);
       setPrompt("");
       setNotice("Bucky edit ready. Ask for another change to refine this result, download it, or save it to a product.");
@@ -150,10 +151,17 @@ export default function CreativeStudioPage() {
           <Card className="studio-card" aria-labelledby="studio-editor-heading">
             <h2 id="studio-editor-heading">Bucky image editor</h2>
             <div className="row-actions">
-              <label className="btn" htmlFor="studio-photo-input">Upload Image / Take Photo</label>
-              <input ref={fileRef} id="studio-photo-input" className="sr-only" type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment" onChange={(e) => void onPhotoFile(e.target.files?.[0])} />
+              <button className="btn" type="button" onClick={() => fileRef.current?.click()}>Upload Image</button>
+              <input ref={fileRef} id="studio-photo-input" className="sr-only" type="file" accept="image/jpeg,image/png,image/webp,image/gif" aria-label="Upload image" onChange={(e) => { void onPhotoFile(e.target.files?.[0]); e.target.value = ""; }} />
+              <button className="btn ghost" type="button" onClick={() => { setError(""); setCameraOpen(true); }}>Take Photo</button>
               {originalDataUrl && <button className="btn ghost" type="button" onClick={startOver}>Start over</button>}
             </div>
+            {cameraOpen && (
+              <ScannerCamera
+                onUsePhoto={(file) => { setCameraOpen(false); void onPhotoFile(file); }}
+                onClose={() => setCameraOpen(false)}
+              />
+            )}
 
             {originalDataUrl ? (
               <>
@@ -175,11 +183,7 @@ export default function CreativeStudioPage() {
                   </div>
                 )}
 
-                <div className="field studio-prompt">
-                  <label htmlFor="studio-live-token">Live test token (from the local server operator)</label>
-                  <input id="studio-live-token" className="input" type="password" autoComplete="off" value={liveToken} onChange={(e) => setLiveToken(e.target.value)} placeholder="Required for one live AI generation" />
-                  <p className="field-hint">Kept only in this page's memory — never stored. One Generate tap sends exactly one gated request; there are no automatic retries.</p>
-                </div>
+                <p className="field-hint">Live generation uses the Meta AI configured on the server — no extra token is needed here. One Generate tap sends exactly one request; there are no automatic retries. If live AI is not configured, Generate reports that and no image is created.</p>
                 <div className="field studio-prompt">
                   <label htmlFor="studio-prompt-input">{turns.some((t) => t.status === "done") ? "Describe the next change (refines the latest result)" : "Describe what you want to change"}</label>
                   <textarea id="studio-prompt-input" className="input" rows={3} maxLength={MAX_STUDIO_PROMPT_CHARS} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="e.g. Make this adobo look more appetizing, improve the lighting, and give it a professional restaurant photography background." />

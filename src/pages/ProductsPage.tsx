@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import ProductPhotoReview from "../components/ProductPhotoReview";
 import Icon from "../components/ui/Icon";
 import PageHeader from "../components/ui/PageHeader";
@@ -38,6 +39,7 @@ export default function ProductsPage() {
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [products, setProducts] = useState<Product[]>([]);
   const [notice, setNotice] = useState("");
   const [pageError, setPageError] = useState("");

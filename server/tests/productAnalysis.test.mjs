@@ -26,7 +26,7 @@ test('product image uses existing Muse Responses transport with dedicated schema
 });
 test('dedicated HTTP route validates images, labels mock mode and blocks live without gates',async()=>{
  let upstream=0;
- const server=createAppServer({liveMetaEnabled:false,modelApiKeyConfigured:false,liveTestTokenConfigured:false},{fetchImpl:async()=>{upstream++;throw Error('No external request allowed');}});
+ const server=createAppServer({liveMetaEnabled:false,modelApiKeyConfigured:false},{fetchImpl:async()=>{upstream++;throw Error('No external request allowed');}});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const url='http://127.0.0.1:'+server.address().port+'/api/products/analyze';
  const post=payload=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Connection':'close'},body:JSON.stringify(payload)});

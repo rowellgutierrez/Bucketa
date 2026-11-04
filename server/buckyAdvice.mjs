@@ -97,7 +97,7 @@ export function validateAdviceRequest(payload) {
   const s = payload.summary;
   if (
     !isRecord(s) ||
-    !hasOnlyKeys(s, ["profileName", "profileKind", "currencies", "insightKinds", "duplicateGroupCount", "lowStockCount", "savingsGoals", "limitations"])
+    !hasOnlyKeys(s, ["profileName", "profileKind", "currencies", "insightKinds", "duplicateGroupCount", "lowStockCount", "savingsGoals", "limitations", "queryContext", "conversationOnly"])
   ) {
     throw errors.invalidRequest();
   }
@@ -181,11 +181,21 @@ export function validateAdviceRequest(payload) {
     });
   }
 
+  if(s.conversationOnly!==undefined&&typeof s.conversationOnly!=='boolean')throw errors.invalidRequest();
+  if(s.conversationOnly&&(profileName!=='Bucketa'||s.profileKind!=='personal'||currencies.length||savingsGoals.length||s.duplicateGroupCount||s.lowStockCount||s.insightKinds.length||s.queryContext))throw errors.invalidRequest();
+  let queryContext;
+  if(s.queryContext!==undefined){const q=s.queryContext;
+   if(!isRecord(q)||!hasOnlyKeys(q,['question','localDate','answer','facts','limited'])||q.question!==question||typeof q.localDate!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(q.localDate)||!cleanString(q.answer,1200)||typeof q.limited!=='boolean'||!Array.isArray(q.facts)||q.facts.length>10)throw errors.invalidRequest();
+   const facts=q.facts.map(f=>{if(!isRecord(f)||!hasOnlyKeys(f,['label','value'])||!cleanString(f.label,80)||!cleanString(f.value,160))throw errors.invalidRequest();return{label:f.label,value:f.value};});
+   queryContext={question,localDate:q.localDate,answer:q.answer,facts,limited:q.limited};
+  }
   return {
     question,
     mode,
     history,
     summary: {
+      ...(s.conversationOnly?{conversationOnly:true}:{}),
+      ...(queryContext?{queryContext}:{}),
       profileName,
       profileKind: s.profileKind,
       currencies,
@@ -200,6 +210,7 @@ export function validateAdviceRequest(payload) {
 
 /** Verified evidence, computed here from the validated summary only. */
 export function buildVerifiedEvidence(summary) {
+  if(summary.queryContext)return summary.queryContext.facts;
   const evidence = [];
   for (const c of summary.currencies) {
     if (c.transactionCount > 0) {
@@ -243,6 +254,8 @@ function resolveActions(ids) {
  * or its response fails validation. Always labelled via `source`.
  */
 export function buildDeterministicAdvice({ question, summary, history = [] }) {
+  if(summary.conversationOnly)return {answer:"Hi! I’m Bucky, your financial and business assistant. I can explain business concepts and help with supported Bucketa tasks. Name the relevant profile or record when you need actual figures; changes always require your confirmation.",explanation:"Deterministic help response with no financial profile or records attached.",evidence:[],suggestedActions:[],limitations:["A live model answer was not used."]};
+  if(summary.queryContext)return {answer:summary.queryContext.answer,explanation:"Exact answer computed from selected-profile records for the stated local date/scope; no model inference.",evidence:summary.queryContext.facts,suggestedActions:[],limitations:summary.limitations};
   const q = question.toLowerCase();
   const evidence = buildVerifiedEvidence(summary);
   const limitations = [
@@ -410,7 +423,7 @@ export const BUCKY_ADVICE_JSON_SCHEMA = {
 export function buildBuckyAdvicePrompt({ question, summary, history = [] }) {
   const historyLines = (history ?? []).slice(-6).map((turn) => `${turn.role === "user" ? "User" : "Bucky"}: ${turn.text}`);
   return [
-    `You are Bucky, a financial assistant inside Bucketa, answering a question for the profile "${summary.profileName}" (${summary.profileKind}).`,
+    summary.conversationOnly?"You are Bucky, a friendly financial and business assistant inside Bucketa. This is ordinary conversation. Never claim that an application action was executed: this response cannot modify records. No personal or business profile, financial records, balances, goals, or employee information are attached. Answer the general question without pretending to read records; ask for a profile when a request needs actual data.":`You are Bucky, a financial assistant inside Bucketa, answering a question for the profile "${summary.profileName}" (${summary.profileKind}).`,
     "Use ONLY the aggregated summary below for financial figures. Never invent transactions, amounts, products, or dates. Never combine currencies.",
     "For general or casual questions, answer helpfully without inventing financial data. Ask a clarifying question when the request is ambiguous.",
     "Net cash flow is recorded income minus recorded expenses: it is not profit and not a bank balance. POS revenue is separate from transaction income.",

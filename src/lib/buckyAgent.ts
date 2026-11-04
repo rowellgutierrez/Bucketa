@@ -1,3 +1,4 @@
+import {localDateKey,timestampLocalDate} from './localDate.ts';
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types.ts";
 import { bucketGoalProgress, expenseByCategory, monthlyIncomeExpense, summarizeTransactions } from "./finance.ts";
 import { compensationTypeOf, paymentEmployeeName, type CompensationType } from "./employees.ts";
@@ -77,6 +78,7 @@ export interface BuckyAnalysis {
   profileName: string;
   profileKind: Profile["kind"];
   generatedAt: string;
+  localDate?:string;
   currencies: CurrencyIntelligence[];
   insights: BuckyInsight[];
   proposals: BuckyProposal[];
@@ -161,10 +163,8 @@ export function analyzeBuckyFinances(input: {
   ]);
   if (currenciesSeen.size === 0) currenciesSeen.add(profile.currency);
 
-  // UTC consistently, matching shiftMonth: local-time month derivation
-  // would disagree with the shifted previous month near month boundaries
-  // depending on the device timezone.
-  const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  // Local calendar month; shiftMonth performs calendar arithmetic on that key.
+  const currentMonth = localDateKey(now).slice(0,7);
   const previousMonth = shiftMonth(currentMonth, -1);
 
   const currencies: CurrencyIntelligence[] = [...currenciesSeen].sort().map((currency) => {
@@ -447,7 +447,7 @@ export function analyzeBuckyFinances(input: {
     return entry;
   };
   for (const t of transactions) if (t.type === "income") earnedEntry(t.date.slice(0, 10), t.currency).incomeMinor += t.amountMinor;
-  for (const s of sales) earnedEntry(s.createdAt.slice(0, 10), s.currency).posRevenueMinor += s.totalMinor;
+  for (const s of sales) earnedEntry(timestampLocalDate(s.createdAt), s.currency).posRevenueMinor += s.totalMinor;
   const earnedByDate: BuckyAnalysis["earnedByDate"] = {};
   for (const [date, byCurrency] of earnedMap) earnedByDate[date] = [...byCurrency.values()].sort((a, b) => a.currency.localeCompare(b.currency));
 
@@ -456,6 +456,7 @@ export function analyzeBuckyFinances(input: {
     profileName: profile.name,
     profileKind: profile.kind,
     generatedAt,
+    localDate:localDateKey(now),
     currencies,
     insights,
     proposals,
@@ -491,13 +492,16 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
   }
   if (/salary rate|configured rate|agreed rate|tax|deduction|amount owed|payroll calculation/.test(q)) return insufficient('I can report recorded employee payments, not payroll calculations or amounts owed. Review configured rates and payment history in Employees.');
   if (/\b(profit|net income|tubo|kita|kinita)\b/.test(q)) return insufficient('I can report recorded income, expenses, cash flow, and POS revenue. These records do not establish profit or a bank balance.');
+  const asksDatedDetail=/\b(today|yesterday|this (?:week|month|year)|last (?:week|month|year)|20\d{2}|ngayon|kahapon|buwan|linggo|taon)\b/i.test(q);
+  if(asksDatedDetail && /saving|goal|bucket|best-selling|best.*product|top.*product|products?.*sold/.test(q))return insufficient('I cannot reliably apply that date range to these savings or product rankings. Ask for the current savings balance or an all-time product ranking.');
+  if(/today|ngayon/.test(q)&&/yesterday|kahapon/.test(q)&&/compare|versus|vs|difference/.test(q))return insufficient('I can report today or yesterday separately; a reliable comparison is not supported by this answer path yet. Ask for one date at a time.');
   if (/\b(best|top|most|highest)\b.*\b(products?|sold|sales?|selling)\b|\bproducts?\b.*\b(best|sold most)\b|best-selling/.test(q)) {
     if (!analysis.bestSellers.length) return insufficient('No completed POS sales are recorded for this profile yet, so I cannot rank products.');
     return { answer: `Best-selling products for ${analysis.profileName} from completed POS sales (ranked by units sold): ${analysis.bestSellers.map((s) => `${s.name} — ${s.quantity} sold`).join("; ")}. Revenue is shown per product; currencies are never combined.`, facts: analysis.bestSellers.map((s) => ({ label: s.name, value: `${s.quantity} sold · ${money(s.revenueMinor, s.currency)}` })), proposalIds: [], insufficientData: false };
   }
   // Earned today / yesterday: recorded income + POS revenue for that date only.
   if (/\b(earn|earned|earnings|income|revenue|sales|benta)\b/.test(q) && /\b(today|yesterday|ngayon|kahapon)\b/.test(q) && !/expense|spent/.test(q)) {
-    const today = analysis.generatedAt.slice(0, 10);
+    const today = analysis.localDate??localDateKey(new Date(analysis.generatedAt));
     const date = /\byesterday|kahapon\b/.test(q) ? new Date(Date.parse(`${today}T00:00:00.000Z`) - 86400000).toISOString().slice(0, 10) : today;
     const rows = analysis.earnedByDate[date] ?? [];
     if (!rows.length) return insufficient(`No recorded income or completed POS sales on ${date} for this profile yet.`);
@@ -562,7 +566,7 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
       const mine = payments.filter((p) => p.employeeName === namedPerson && (!paymentType || p.type === paymentType));
       const thisMonth = /this month/.test(q);
       const scoped = thisMonth
-        ? mine.filter((p) => p.date.slice(0, 7) === analysis.generatedAt.slice(0, 7))
+        ? mine.filter((p) => p.date.slice(0, 7) === (analysis.localDate??localDateKey(new Date(analysis.generatedAt))).slice(0,7))
         : mine;
       if (scoped.length === 0) {
         return insufficient(`No matching recorded payments to ${namedPerson}${thisMonth ? " this month" : ""}.`);
@@ -683,8 +687,11 @@ export function answerBuckyQuestion(question: string, analysis: BuckyAnalysis): 
 }
 
 /** Aggregated summary safe to send to a model: totals and counts only, no raw records. */
-export function buildBuckyModelSummary(analysis: BuckyAnalysis) {
+export function isRecordQuestion(question:string){return /\b(income|expenses?|spent|spending|cash flow|revenue|sales?|savings|goals?|buckets?|stock|inventory|products?|salary|salaries|employees?|bonus|advance|profit|earn|earned|earnings|pay|balance|budget|finance|financial|payments?|wages?|money|cash|nagastos|ginastos|gastos|benta|ipon|naipon|produkto|imbentaryo)\b/i.test(question)||/\b(how much|magkano)\b/i.test(question);}
+export function buildBuckyModelSummary(analysis: BuckyAnalysis, question?:string) {
+ const answer=question&&isRecordQuestion(question)?answerBuckyQuestion(question,analysis):null;
   return {
+    ...(answer&&question?{queryContext:{question,localDate:analysis.localDate??localDateKey(new Date(analysis.generatedAt)),answer:answer.answer.length<=1200?answer.answer:"This answer needs a narrower question. No date or financial figure was inferred.",facts:answer.answer.length<=1200?answer.facts.slice(0,10):[],limited:answer.insufficientData||answer.answer.length>1200}}:{}),
     profileName: analysis.profileName,
     profileKind: analysis.profileKind,
     currencies: analysis.currencies.map((c) => ({
@@ -708,3 +715,7 @@ export function buildBuckyModelSummary(analysis: BuckyAnalysis) {
     limitations: analysis.limitations,
   };
 }
+
+/** No profile names, totals, goals or employee information in ordinary conversation. */
+export function buildBuckyConversationSummary(){return {conversationOnly:true,profileName:'Bucketa',profileKind:'personal' as const,currencies:[],insightKinds:[],duplicateGroupCount:0,lowStockCount:0,savingsGoals:[],limitations:['No financial records are attached to this conversation.']};}
+export function answerBuckyConversation():BuckyAnswer{return {answer:"Hi! I’m Bucky, your financial and business assistant. I can help explain business concepts and work with your Bucketa records. Name a business, personal profile, product, or goal when you need recorded figures or a supported action. Changes always need your confirmation.",facts:[],proposalIds:[],insufficientData:false};}

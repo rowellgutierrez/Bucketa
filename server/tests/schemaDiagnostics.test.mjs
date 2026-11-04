@@ -188,7 +188,6 @@ test("grounding remains a separate category, not a schema sub-reason", () => {
 
 test("live endpoint reports the schema sub-reason in its safe diagnostic", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   const fakeFetch = async () => ({
     status: 200,
     text: async () =>
@@ -202,14 +201,14 @@ test("live endpoint reports the schema sub-reason in its safe diagnostic", async
       }),
   });
   const server = createAppServer(
-    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true },
+    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true },
     { fetchImpl: fakeFetch },
   );
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const res = await fetch(`http://127.0.0.1:${server.address().port}/api/bucky/advise`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": "test-token-not-real" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: "How is my cash flow?", mode: "live", summary }),
     });
     const json = await res.json();
@@ -222,6 +221,5 @@ test("live endpoint reports the schema sub-reason in its safe diagnostic", async
   } finally {
     await new Promise((resolve) => server.close(resolve));
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
   }
 });

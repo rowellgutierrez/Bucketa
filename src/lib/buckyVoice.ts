@@ -162,18 +162,25 @@ export function hasSilenceElapsed(lastResultAt: number, now: number, thresholdMs
 
 /**
  * Whether a finished listening session may be interpreted automatically.
- * Only a clean settle with actual speech qualifies: after a recognition
- * error the transcript may be incomplete, so it must stay in review for
- * a manual Run; a cancelled session is never processed at all. Even when
- * this returns true, processing only *interprets* — every write still
- * needs the structured preview and an explicit Confirm.
+ * A clean settle with actual speech qualifies, and so does a settle
+ * whose only error is benign ("no-speech" / "aborted"): browsers fire
+ * those *after* final speech was already captured (trailing silence,
+ * session teardown), and treating them as failures stranded finished
+ * messages unsent. After a genuine recognition error
+ * (network, audio-capture, permission, …) the transcript may be
+ * incomplete, so it is discarded — never auto-run and never parked in
+ * a manual review step; the user simply speaks again. A cancelled
+ * session is never processed at all. Even when this returns true,
+ * processing only *interprets* — every write still needs the
+ * structured preview and an explicit Confirm.
  */
 export function shouldAutoProcessTranscript(options: {
   heard: string;
   errorCode: string;
   cancelled: boolean;
 }): boolean {
-  return options.heard.trim().length > 0 && !options.errorCode && !options.cancelled;
+  if (options.heard.trim().length === 0 || options.cancelled) return false;
+  return options.errorCode === "" || options.errorCode === "no-speech" || options.errorCode === "aborted";
 }
 
 /* --- Speech synthesis voice choice (built-in voices only). --- */
@@ -204,8 +211,8 @@ export function buckyUtteranceTuning(settings: { rate: number; pitch: number }):
   const clamp = (v: number, min: number, max: number, fallback: number) =>
     Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
   return {
-    rate: clamp(settings.rate, 0.9, 1.02, 0.95),
-    pitch: clamp(settings.pitch, 1.0, 1.12, 1.05),
+    rate: clamp(settings.rate, 0.95, 1.05, 1.0),
+    pitch: clamp(settings.pitch, 1.15, 1.25, 1.2),
   };
 }
 
@@ -218,6 +225,7 @@ export function pickPreferredVoice(voices: readonly SpeechVoiceLike[]): SpeechVo
     if (lang.startsWith("en")) points += 40; else return -1;
     if (lang === "en-us") points += 8;
     if (/natural|neural/.test(name)) points += 30;
+    if (/neutral|androgynous/.test(name)) points += 20;
     if (/google us english/.test(name)) points += 26;
     if (/samantha|zira|aria|jenny|guy/.test(name)) points += 18;
     if (/microsoft/.test(name)) points += 10;

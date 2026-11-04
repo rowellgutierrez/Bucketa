@@ -127,7 +127,7 @@ test("sendMetaEnvelope still performs exactly one fetch (no retry)", async () =>
 
 async function withServer(deps, run) {
   const server = createAppServer(
-    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: false, liveMetaEnabled: false, liveTestTokenConfigured: false },
+    { host: "127.0.0.1", port: 0, modelApiKeyConfigured: false, liveMetaEnabled: false },
     deps,
   );
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

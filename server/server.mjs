@@ -2,9 +2,9 @@ import { mockProductAnalysis } from "./productAnalysis.mjs";
 import { buildMetaProductRequest, sendMetaProduct } from "./metaClient.mjs";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { getConfig, getLiveTestToken, getModelApiKey, loadRootEnv } from "./config.mjs";
+import { getConfig, getModelApiKey, loadRootEnv } from "./config.mjs";
 import { errors, PublicError } from "./errors.mjs";
-import { assertLiveAllowed, createLiveLimiter } from "./liveGate.mjs";
+import { assertLiveAllowed } from "./liveGate.mjs";
 import { buildMetaAdviceRequest, buildMetaInterpretRequest, buildMetaRequest, META_MODEL_ID, sendMetaAdvice, sendMetaInterpret, sendToMeta } from "./metaClient.mjs";
 import { MetaDiagnosticError, metaDiagnosticLogLine, safeMetaDiagnostic } from "./metaDiagnostics.mjs";
 import {
@@ -19,7 +19,6 @@ import {
   validateInterpretRequest,
   validateModelInterpretation,
 } from "./buckyInterpret.mjs";
-import { extractWithMock } from "./mockExtractor.mjs";
 import { buildCreativeImageRequest, creativeImageStatus, META_IMAGE_MODEL, sendCreativeImage, validateCreativeEditRequest } from "./creativeImage.mjs";
 import { isValidCurrencyCode } from "./money.mjs";
 import { validateExtraction } from "./validateExtraction.mjs";
@@ -67,7 +66,7 @@ function readBody(req, maxBytes = MAX_BODY_BYTES) {
   });
 }
 
-async function handleExtract(req, res, { config, liveLimiter, fetchImpl }) {
+async function handleExtract(req, res, { config, fetchImpl }) {
   if (!req.headers["content-type"]?.includes("application/json")) {
     throw errors.invalidRequest();
   }
@@ -78,6 +77,11 @@ async function handleExtract(req, res, { config, liveLimiter, fetchImpl }) {
   } catch {
     throw errors.invalidRequest();
   }
+
+  // Live Meta AI only. Missing, invalid, or "mock" modes are rejected:
+  // production never returns fictional extraction entries. Mocked Meta
+  // responses exist solely inside automated tests.
+  if (payload.mode !== "live") throw errors.invalidRequest();
 
   const expectedCurrency =
     typeof payload.expectedCurrency === "string"
@@ -94,37 +98,23 @@ async function handleExtract(req, res, { config, liveLimiter, fetchImpl }) {
   // Image lives only in this buffer for the duration of the request.
   const { mediaType } = validateImageBuffer(imageBuffer, payload.mediaType);
 
-  if (payload.mode === "live") {
-    // Gated live path (M1B): all three authorizations are required,
-    // then the per-session limiter counts this single attempt.
-    assertLiveAllowed({
-      liveMetaEnabled: config.liveMetaEnabled,
-      modelApiKey: getModelApiKey(),
-      liveTestToken: getLiveTestToken(),
-      requestToken: req.headers["x-bucketa-live-test"],
-    });
-    liveLimiter.consume();
-    const request = buildMetaRequest({
-      imageBase64: payload.imageBase64,
-      mediaType,
-      expectedCurrency,
-      recordType,
-      apiKey: getModelApiKey(),
-    });
-    const raw = await sendToMeta(request, fetchImpl);
-    const result = validateExtraction(raw, expectedCurrency);
-    sendJson(res, 200, {
-      mode: "live",
-      recordType,
-      liveRequestsUsed: liveLimiter.used,
-      ...result,
-    });
-    return result.entries.length;
-  }
-
-  const raw = extractWithMock(expectedCurrency);
+  // Gated live path: ENABLE_LIVE_META + server key + loopback origin.
+  // No application-imposed session cap; one upstream attempt only.
+  assertLiveAllowed({ liveMetaEnabled: config.liveMetaEnabled, modelApiKey: getModelApiKey(), origin: req.headers.origin, host: req.headers.host });
+  const request = buildMetaRequest({
+    imageBase64: payload.imageBase64,
+    mediaType,
+    expectedCurrency,
+    recordType,
+    apiKey: getModelApiKey(),
+  });
+  const raw = await sendToMeta(request, fetchImpl);
   const result = validateExtraction(raw, expectedCurrency);
-  sendJson(res, 200, { mode: "mock", recordType, ...result });
+  sendJson(res, 200, {
+    mode: "live",
+    recordType,
+    ...result,
+  });
   return result.entries.length;
 }
 
@@ -133,12 +123,12 @@ async function handleExtract(req, res, { config, liveLimiter, fetchImpl }) {
  * Default: deterministic fallback computed in code from the strictly
  * validated aggregated summary (always labelled source:
  * "deterministic-fallback"). Live Meta reasoning only when mode:"live"
- * AND all live gates pass AND the session limiter allows it; model
+ * AND all live gates pass; model
  * output is validated (allowlisted actions, grounded numbers) and any
  * failure falls back deterministically with a warning â€” never silently.
  * Evidence in every response is computed server-side, never model-made.
  */
-async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
+async function handleBuckyAdvise(req, res, { config, fetchImpl }) {
   if (!req.headers["content-type"]?.includes("application/json")) {
     throw errors.invalidRequest();
   }
@@ -155,20 +145,15 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
   const fallback = buildDeterministicAdvice(validated);
   const evidence = buildVerifiedEvidence(validated.summary);
 
-  if (validated.mode !== "live") {
+  if (validated.mode !== "live" || validated.summary.queryContext) {
     sendJson(res, 200, { source: "deterministic-fallback", model: null, ...fallback, evidence });
     return;
   }
 
-  // Live path: same gates and single-attempt limiter as the scanner.
-  // Gate failures are errors (never a silent downgrade of a live request).
-  assertLiveAllowed({
-    liveMetaEnabled: config.liveMetaEnabled,
-    modelApiKey: getModelApiKey(),
-    liveTestToken: getLiveTestToken(),
-    requestToken: req.headers["x-bucketa-live-test"],
-  });
-  liveLimiter.consume();
+  // Live path: same gates as the scanner, one upstream attempt, no
+  // application-imposed session cap. Gate failures are errors (never a
+  // silent downgrade of a live request).
+  assertLiveAllowed({ liveMetaEnabled: config.liveMetaEnabled, modelApiKey: getModelApiKey(), origin: req.headers.origin, host: req.headers.host });
   try {
     const request = buildMetaAdviceRequest({
       question: validated.question,
@@ -217,14 +202,13 @@ async function handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl }) {
  * The browser's deterministic interpreter is the default and the fallback.
  * Fallback mode never calls the model: it answers { source:
  * "deterministic", proposal: null } and the client uses its local parser.
- * Live mode requires the same triple gate and single-attempt session
- * limiter as the scanner and advisor, and returns only a strictly
+ * Live mode requires the same live gate as the scanner and advisor (ENABLE_LIVE_META + server MODEL_API_KEY + loopback origin), and returns only a strictly
  * validated structured proposal. The browser cross-checks that proposal
  * against the user's own words and real records before showing the usual
  * preview; nothing here writes data, and any live failure degrades to
  * "no proposal" with a safe diagnostic â€” never to a trusted guess.
  */
-async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }) {
+async function handleBuckyInterpret(req, res, { config, fetchImpl }) {
   if (!req.headers["content-type"]?.includes("application/json")) {
     throw errors.invalidRequest();
   }
@@ -242,15 +226,9 @@ async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }
     return;
   }
 
-  // Live path: identical gates and limiter as /api/bucky/advise. Gate
+  // Live path: identical gates as /api/bucky/advise, no session cap. Gate
   // failures are errors (never a silent downgrade of a live request).
-  assertLiveAllowed({
-    liveMetaEnabled: config.liveMetaEnabled,
-    modelApiKey: getModelApiKey(),
-    liveTestToken: getLiveTestToken(),
-    requestToken: req.headers["x-bucketa-live-test"],
-  });
-  liveLimiter.consume();
+  assertLiveAllowed({ liveMetaEnabled: config.liveMetaEnabled, modelApiKey: getModelApiKey(), origin: req.headers.origin, host: req.headers.host });
   try {
     const request = buildMetaInterpretRequest({
       text: validated.text,
@@ -289,8 +267,8 @@ async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }
  * BEFORE any Meta call while image editing is unverified for this
  * account (see creativeImage.mjs). No paid request, retry, or fake
  * image is possible from this route today. When account access is
- * separately verified, sending must go through assertLiveAllowed +
- * liveLimiter, one image per user-initiated request.
+ * separately verified, sending must go through assertLiveAllowed,
+ * one image per user-initiated request, with no session request cap.
  */
 /**
  * Bucky Creative Studio image editing (Muse Image 1.0, Responses API).
@@ -298,14 +276,14 @@ async function handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl }
  * POST /api/creative/edit â€” validates image + prompt first. Non-live
  * requests are refused (501) before any Meta call: there is no mock
  * generation, because a fake image must never be presented as AI.
- * Live requests require mode:"live" AND the full triple gate
- * (ENABLE_LIVE_META + server MODEL_API_KEY + per-request
- * x-bucketa-live-test token) AND one slot of the shared session
- * limiter, consumed before the single upstream attempt. No retries.
+ * Live requests require mode:"live" AND the live gate
+ * (ENABLE_LIVE_META + server MODEL_API_KEY + loopback origin),
+ * then the single upstream attempt. No retries
+ * and no application-imposed session request cap.
  * The upstream envelope is parsed server-side; only the validated PNG
  * data URL reaches the browser â€” never raw upstream bodies.
  */
-async function handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl }) {
+async function handleCreativeEdit(req, res, { config, fetchImpl }) {
   if (!req.headers["content-type"]?.includes("application/json")) {
     throw errors.invalidRequest();
   }
@@ -329,13 +307,7 @@ async function handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl }) 
   if (validated.mode !== "live") {
     throw errors.imageEditingUnverified();
   }
-  assertLiveAllowed({
-    liveMetaEnabled: config.liveMetaEnabled,
-    modelApiKey: getModelApiKey(),
-    liveTestToken: getLiveTestToken(),
-    requestToken: req.headers["x-bucketa-live-test"],
-  });
-  liveLimiter.consume();
+  assertLiveAllowed({ liveMetaEnabled: config.liveMetaEnabled, modelApiKey: getModelApiKey(), origin: req.headers.origin, host: req.headers.host });
   const request = buildCreativeImageRequest({
     imageBase64: payload.imageBase64,
     mediaType,
@@ -350,7 +322,7 @@ async function handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl }) 
   });
 }
 
-async function handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl}) {
+async function handleProductAnalysis(req, res, {config, fetchImpl}) {
  if(!req.headers['content-type']?.includes('application/json')) throw errors.invalidRequest();
  let payload;
  try { payload = JSON.parse((await readBody(req)).toString('utf8')); } catch(error) { if(error instanceof PublicError) throw error; throw errors.invalidRequest(); }
@@ -359,14 +331,12 @@ async function handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl})
  if(!bytes) throw errors.unsupportedImage();
  const {mediaType} = validateImageBuffer(bytes,payload.mediaType);
  if(payload.mode === 'mock') { sendJson(res,200,{mode:'mock',model:null,draft:mockProductAnalysis()}); return; }
- assertLiveAllowed({liveMetaEnabled:config.liveMetaEnabled,modelApiKey:getModelApiKey(),liveTestToken:getLiveTestToken(),requestToken:req.headers['x-bucketa-live-test']});
- liveLimiter.consume();
+ assertLiveAllowed({ liveMetaEnabled: config.liveMetaEnabled, modelApiKey: getModelApiKey(), origin: req.headers.origin, host: req.headers.host });
  const draft = await sendMetaProduct(buildMetaProductRequest({imageBase64:payload.imageBase64,mediaType,apiKey:getModelApiKey()}),fetchImpl);
  sendJson(res,200,{mode:'live',model:META_MODEL_ID,draft});
 }
 
 export function createAppServer(config = getConfig(), deps = {}) {
-  const liveLimiter = deps.liveLimiter ?? createLiveLimiter();
   const fetchImpl = deps.fetchImpl ?? fetch;
   return createServer(async (req, res) => {
     const started = Date.now();
@@ -376,52 +346,50 @@ export function createAppServer(config = getConfig(), deps = {}) {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (req.method === "GET" && url.pathname === "/api/health") {
         status = 200;
+        const liveConfigured = Boolean(config.liveMetaEnabled && config.modelApiKeyConfigured);
         sendJson(res, status, {
           ok: true,
-          mode: "mock",
-          defaultMode: "mock",
           modelApiKeyConfigured: config.modelApiKeyConfigured,
-          liveMeta:
-            config.liveMetaEnabled && config.modelApiKeyConfigured && config.liveTestTokenConfigured
-              ? "enabled-gated"
-              : "disabled",
-          liveRequestsUsed: liveLimiter.used,
-          liveRequestsLimit: 3,
+          liveMeta: liveConfigured ? "enabled" : "disabled",
           buckyAdvise: {
             endpoint: "/api/bucky/advise",
-            defaultSource: "deterministic-fallback",
+            defaultSource: liveConfigured ? "meta-live" : "deterministic-fallback",
             liveModel: META_MODEL_ID,
-            liveCompatibilityVerified: false,
+            // Scoped to this Bucky advice endpoint only (not the scanner
+            // or app-wide): a real live Bucky Financial Intelligence
+            // conversation with muse-spark-1.3 was manually verified by
+            // the developer and returned a meta-live response.
+            liveCompatibilityVerified: true,
           },
-          creativeImage: creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured, liveTestTokenConfigured: config.liveTestTokenConfigured }),
+          creativeImage: creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured }),
         });
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/creative/status") {
         status = 200;
-        sendJson(res, status, creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured, liveTestTokenConfigured: config.liveTestTokenConfigured }));
+        sendJson(res, status, creativeImageStatus({ liveMetaEnabled: config.liveMetaEnabled, modelApiKeyConfigured: config.modelApiKeyConfigured }));
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/creative/edit") {
-        await handleCreativeEdit(req, res, { config, liveLimiter, fetchImpl });
+        await handleCreativeEdit(req, res, { config, fetchImpl });
         status = 200;
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/bucky/advise") {
-        await handleBuckyAdvise(req, res, { config, liveLimiter, fetchImpl });
+        await handleBuckyAdvise(req, res, { config, fetchImpl });
         status = 200;
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/bucky/interpret") {
-        await handleBuckyInterpret(req, res, { config, liveLimiter, fetchImpl });
+        await handleBuckyInterpret(req, res, { config, fetchImpl });
         status = 200;
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/products/analyze") {
-        await handleProductAnalysis(req, res, {config, liveLimiter, fetchImpl}); status = 200; return;
+        await handleProductAnalysis(req, res, {config, fetchImpl}); status = 200; return;
       }
       if (req.method === "POST" && url.pathname === "/api/extract") {
-        entryCount = await handleExtract(req, res, { config, liveLimiter, fetchImpl });
+        entryCount = await handleExtract(req, res, { config, fetchImpl });
         status = 200;
         return;
       }
@@ -457,7 +425,7 @@ if (isMain) {
   const server = createAppServer(config);
   server.listen(config.port, config.host, () => {
     console.log(
-      `Bucketa server listening on http://${config.host}:${config.port} (defaultMode=mock, liveMetaEnabled=${config.liveMetaEnabled}, modelApiKeyConfigured=${config.modelApiKeyConfigured})`,
+      `Bucketa server listening on http://${config.host}:${config.port} (liveMetaEnabled=${config.liveMetaEnabled}, modelApiKeyConfigured=${config.modelApiKeyConfigured})`,
     );
   });
 }

@@ -7,6 +7,7 @@ import {
   formatMinor,
   validateAdviceRequest,
   validateModelAdvice,
+  buildBuckyAdvicePrompt,
 } from "../buckyAdvice.mjs";
 import { buildMetaAdviceRequest, META_MODEL_ID, parseMetaAdviceResponse } from "../metaClient.mjs";
 import { createAppServer } from "../server.mjs";
@@ -223,7 +224,6 @@ const mockConfig = {
   port: 0,
   modelApiKeyConfigured: false,
   liveMetaEnabled: false,
-  liveTestTokenConfigured: false,
 };
 
 async function postAdvise(base, body, headers = {}) {
@@ -265,24 +265,26 @@ test("live advise without gates is an explicit error, never a silent fallback", 
 
 test("live advise for a profile with salary insights reaches the live gate, not validation", async () => {
   // Same regression at the HTTP layer: a valid salary-bearing summary must
-  // pass validation and be stopped only by the live gate (403), consuming
-  // no limiter slot — a 400 here was the reported failure, with the health
-  // counter frozen because the limiter is only consumed after the gate.
+  // pass validation and be stopped only by the live gate (403) — a 400 here
+  // was the reported failure.
   await withServer(mockConfig, {}, async (base) => {
     const salaryPayload = payload({ mode: "live", summary: summary({ insightKinds: ["cash-flow", "salary"] }) });
     const { status, json } = await postAdvise(base, salaryPayload);
     assert.equal(status, 403);
     assert.equal(json.error, "live_disabled");
     const health = await (await fetch(`${base}/api/health`)).json();
-    assert.equal(health.liveRequestsUsed, 0);
+    // No app-imposed session quota is reported; Bucky advise verification
+    // is scoped to this endpoint and manually verified.
+    assert.equal("liveRequestsUsed" in health, false);
+    assert.equal("liveRequestsLimit" in health, false);
+    assert.equal(health.buckyAdvise.liveCompatibilityVerified, true);
   });
 });
 
 test("live advise with a fake Meta response returns validated meta-live advice", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   try {
-    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true };
+    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true };
     const fakeFetch = async () => ({
       status: 200,
       text: async () =>
@@ -297,7 +299,7 @@ test("live advise with a fake Meta response returns validated meta-live advice",
         }),
     });
     await withServer(liveConfig, { fetchImpl: fakeFetch }, async (base) => {
-      const { status, json } = await postAdvise(base, payload({ mode: "live" }), { "x-bucketa-live-test": "test-token-not-real" });
+      const { status, json } = await postAdvise(base, payload({ mode: "live" }));
       assert.equal(status, 200);
       assert.equal(json.source, "meta-live");
       assert.equal(json.model, META_MODEL_ID);
@@ -307,15 +309,57 @@ test("live advise with a fake Meta response returns validated meta-live advice",
     });
   } finally {
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
+  }
+});
+
+test("more than three consecutive live advise requests are not rejected by any Bucketa session cap", async () => {
+  process.env.MODEL_API_KEY = "test-key-not-real";
+  try {
+    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true };
+    let metaCalls = 0;
+    const fakeFetch = async () => {
+      metaCalls += 1;
+      return {
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            output_text: JSON.stringify({
+              answer: "Expenses rose 50% this month, with Supplies the largest category at PHP 250.00.",
+              explanation: "POS revenue is PHP 300.00, reported separately from income and not profit.",
+              evidence: [],
+              suggestedActionIds: [],
+              limitations: ["Based on recorded summaries only."],
+            }),
+          }),
+      };
+    };
+    await withServer(liveConfig, { fetchImpl: fakeFetch }, async (base) => {
+      // A disallowed (non-loopback) Origin is still rejected safely before any upstream call.
+      const bad = await postAdvise(base, payload({ mode: "live" }), { Origin: "https://evil.example" });
+      assert.equal(bad.status, 403);
+      assert.equal(bad.json.error, "live_unauthorized");
+      assert.equal(metaCalls, 0);
+      // Five consecutive live requests (old cap was three) all succeed.
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        const { status, json } = await postAdvise(base, payload({ mode: "live" }));
+        assert.equal(status, 200, `attempt ${attempt}`);
+        assert.equal(json.source, "meta-live", `attempt ${attempt}`);
+        assert.notEqual(json.error, "live_limit_reached");
+      }
+      assert.equal(metaCalls, 5);
+      const health = await (await fetch(`${base}/api/health`)).json();
+      assert.equal("liveRequestsLimit" in health, false);
+      assert.equal("liveRequestsUsed" in health, false);
+    });
+  } finally {
+    delete process.env.MODEL_API_KEY;
   }
 });
 
 test("live advise falls back (labelled) when the model invents numbers", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   try {
-    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true };
+    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true };
     const fakeFetch = async () => ({
       status: 200,
       text: async () =>
@@ -330,13 +374,26 @@ test("live advise falls back (labelled) when the model invents numbers", async (
         }),
     });
     await withServer(liveConfig, { fetchImpl: fakeFetch }, async (base) => {
-      const { status, json } = await postAdvise(base, payload({ mode: "live" }), { "x-bucketa-live-test": "test-token-not-real" });
+      const { status, json } = await postAdvise(base, payload({ mode: "live" }));
       assert.equal(status, 200);
       assert.equal(json.source, "deterministic-fallback");
       assert.ok(json.limitations.some((l) => /failed validation/.test(l)));
     });
   } finally {
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
   }
+});
+
+test('Bounded deterministic query evidence cannot be replaced by all-time totals',()=>{
+ const queryContext={question:'How much did we earn today?',localDate:'2026-11-03',answer:'Today recorded income PHP 150.00; POS revenue PHP 90.00, separately.',facts:[{label:'Recorded income PHP',value:'PHP 150.00'},{label:'POS revenue PHP',value:'PHP 90.00'}],limited:false};
+ const request=validateAdviceRequest({question:queryContext.question,mode:'live',summary:summary({queryContext})});
+ assert.deepEqual(buildVerifiedEvidence(request.summary),queryContext.facts);assert.equal(buildDeterministicAdvice(request).answer,queryContext.answer);
+ assert.throws(()=>validateAdviceRequest({question:'Another question',summary:summary({queryContext})}));
+ assert.throws(()=>validateAdviceRequest({question:queryContext.question,summary:summary({queryContext:{...queryContext,rawRecords:[]}})}));
+});
+
+test('General conversation context cannot smuggle a financial profile or records',()=>{
+ const context={conversationOnly:true,profileName:'Bucketa',profileKind:'personal',currencies:[],insightKinds:[],duplicateGroupCount:0,lowStockCount:0,savingsGoals:[],limitations:[]};
+ const request=validateAdviceRequest({question:'Explain bookkeeping for beginners.',summary:context});assert.equal(request.summary.conversationOnly,true);assert.deepEqual(buildVerifiedEvidence(request.summary),[]);assert.equal(buildDeterministicAdvice(request).answer.includes('Sofia'),false);assert.ok(buildBuckyAdvicePrompt(request).includes('No personal or business profile'));
+ assert.throws(()=>validateAdviceRequest({question:'Hello',summary:{...context,profileName:'Sofia'}}));assert.throws(()=>validateAdviceRequest({question:'Hello',summary:{...context,currencies:summary().currencies}}));
 });

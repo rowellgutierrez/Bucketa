@@ -4,9 +4,9 @@
  * The browser sends ONLY the aggregated summary from
  * buildBuckyModelSummary (totals/counts per currency) — never raw
  * records, descriptions, or database access. The Meta API key stays
- * server-side. A live-test token is never hard-coded, persisted, or
- * logged; it is forwarded only when a caller supplies one at runtime
- * for an explicitly requested live answer.
+ * server-side only; the browser never holds a Meta credential and
+ * never asks the user for a temporary token. Live mode is configured
+ * on the server (ENABLE_LIVE_META=1 + MODEL_API_KEY + loopback origin).
  */
 import type { buildBuckyModelSummary } from "./buckyAgent.ts";
 
@@ -49,9 +49,8 @@ const GENERIC_MESSAGE = "The AI Insights request could not be completed. Your ca
 const ERROR_MESSAGES: Record<string, string> = {
   request_too_large: "That question is too long for AI Insights.",
   invalid_request: "AI Insights could not understand that request.",
-  live_disabled: "Live AI is not enabled on this server. The calculated answer still applies.",
-  live_unauthorized: "Live AI was not authorized for this request.",
-  live_limit_reached: "The live test request limit for this server session has been reached.",
+  live_disabled: "Live AI is not enabled on this server. Configure ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY, then restart the server. The calculated answer still applies.",
+  live_unauthorized: "Live AI was not authorized for this request. Open Bucketa from localhost (127.0.0.1) as documented; cross-origin requests are rejected.",
   meta_unavailable: "The AI model could not be reached. The calculated answer still applies.",
   not_found: "The AI Insights service was not found.",
   internal_error: "Something went wrong on the server.",
@@ -59,8 +58,6 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export interface BuckyAdviceOptions {
   mode?: "fallback" | "live";
-  /** Runtime-supplied local live-test token; never hard-coded or stored. */
-  liveTestToken?: string;
   /** Bounded recent turns (max 6) for conversational context. */
   history?: { role: "user" | "bucky"; text: string }[];
 }
@@ -80,10 +77,10 @@ function isAdviceResponse(payload: unknown): payload is BuckyAdviceResponse {
 }
 
 /**
- * Ask the Bucky advisor. Defaults to the server's deterministic fallback
- * (labelled in the response). Live mode requires a runtime token and
- * fails before any network call without one — it never silently
- * downgrades a caller's explicit live request on the client side.
+ * Ask the Bucky advisor. Callers pass mode "live" when the backend
+ * reports live Meta AI configured; the server enforces the live gate
+ * (ENABLE_LIVE_META + server key + loopback origin). No token is ever
+ * requested from the user or sent by the browser.
  */
 export async function requestBuckyAdvice(
   question: string,
@@ -92,16 +89,7 @@ export async function requestBuckyAdvice(
 ): Promise<BuckyAdviceResponse> {
   const mode = options.mode ?? "fallback";
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (mode === "live") {
-    const token = options.liveTestToken;
-    if (!token || token.trim().length === 0) {
-      throw new BuckyApiError(
-        "live_token_required",
-        "Enter the live test token provided by the local server operator before requesting a live AI answer.",
-      );
-    }
-    headers["x-bucketa-live-test"] = token;
-  } else if (mode !== "fallback") {
+  if (mode !== "live" && mode !== "fallback") {
     throw new BuckyApiError("invalid_request", "Choose fallback or live mode before asking Bucky.");
   }
 
@@ -147,9 +135,9 @@ export async function requestBuckyAdvice(
  * goals and employees (no records, no amounts, no rates). The server-side
  * model can only return a structured proposal; the caller must still
  * cross-check it locally (buildActionFromModelProposal) and show the
- * standard preview before anything can be saved. Live-only: without an
- * explicit token this fails before any network call, and the
- * deterministic interpreter remains the fallback.
+ * standard preview before anything can be saved. Live access is
+ * configured on the server only; no user token is sent, and the
+ * deterministic interpreter remains the fallback on failure.
  */
 export interface BuckyInterpretContext {
   profileName: string;
@@ -206,22 +194,14 @@ function isInterpretResponse(payload: unknown): payload is BuckyInterpretRespons
 export async function requestBuckyInterpret(
   text: string,
   context: BuckyInterpretContext,
-  options: { liveTestToken?: string } = {},
 ): Promise<BuckyInterpretResponse> {
-  const token = options.liveTestToken;
-  if (!token || token.trim().length === 0) {
-    throw new BuckyApiError(
-      "live_token_required",
-      "Enter the live test token provided by the local server operator before requesting a live AI interpretation.",
-    );
-  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 35_000);
   let response: Response;
   try {
     response = await fetch("/api/bucky/interpret", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": token },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, mode: "live", context }),
       signal: controller.signal,
     });

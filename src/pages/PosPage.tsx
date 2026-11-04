@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import { notifyRecordsChanged } from "../lib/dataChange";
 import Icon from "../components/ui/Icon";
 import PageHeader from "../components/ui/PageHeader";
@@ -20,7 +21,7 @@ import {
 } from "../lib/pos";
 import BarcodeScanner from "../components/BarcodeScanner";
 import { findProductByBarcode } from "../lib/barcode";
-import { consumePosCartHandoff } from "../lib/buckyAppActions";
+import { consumePosCartHandoff, peekPosCartHandoff } from "../lib/buckyAppActions";
 import Receipt from "../components/Receipt";
 
 type Status = "loading" | "ready" | "error";
@@ -42,6 +43,7 @@ export default function PosPage() {
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [cart, setCart] = useState<Cart>([]);
@@ -101,7 +103,7 @@ export default function PosPage() {
         let next = prev;
         for (const item of handoff.items) {
           const product = list.find((p) => p.id === item.productId);
-          if (!product || product.stock <= 0) continue;
+          if (!product || product.status==='archived' || product.profileId!==forProfileId || product.stock <= 0) continue;
           for (let i = 0; i < item.quantity; i += 1) next = addToCart(next, product);
         }
         return next;
@@ -133,7 +135,8 @@ export default function PosPage() {
         .filter((p) => p.kind === "business")
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name));
       setProfiles(businesses);
-      const selected = businesses.find((p) => p.id === preferredProfileId) ?? businesses[0];
+      const queued=peekPosCartHandoff(window.sessionStorage);
+      const selected = businesses.find((p) => p.id === (preferredProfileId||queued?.profileId)) ?? businesses[0];
       if (selected) {
         setProfileId(selected.id);
         await loadBusinessData(selected.id);

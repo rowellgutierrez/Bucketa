@@ -1,3 +1,4 @@
+import {getBuckyPageProfile,subscribeBuckyPageProfile} from '../lib/buckyProfileContext';
 import {getBuckyPresentation,subscribeBuckyPresentation,setBuckyOpen,setBuckyInline,recordBuckyEvent} from "../lib/buckyPresentation";
 import BuckyStatusMascot from "./BuckyStatusMascot";
 import {formatMoney} from "../lib/currency";
@@ -26,6 +27,7 @@ type Status = "idle" | "loading" | "ready" | "error";
  * or cancels it, so a prepared record is never silently discarded.
  */
 export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolean}) {
+  const pageProfile=useSyncExternalStore(subscribeBuckyPageProfile,getBuckyPageProfile,getBuckyPageProfile);
   const presentation = useSyncExternalStore(subscribeBuckyPresentation,getBuckyPresentation,getBuckyPresentation);
   const [request, setRequest] = useState<BuckyConversationRequest | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -264,7 +266,7 @@ export default function BuckyDock({hideLauncher = false}: {hideLauncher?: boolea
         {inline && showPendingHint && hasUnsavedWork && <p role="alert" className="alert-error">Confirm or cancel the pending preview before closing.</p>}
         {inline && !loaded && status!=='error' && <p role="status">Loading your saved records…</p>}
         {inline && status==='error' && <div><p role="alert" className="alert-error">Bucky couldn't load your records. Nothing was changed.</p><button type="button" className="btn" onClick={()=>void load()}>Retry</button></div>}
-        {loaded && <BuckyPanel profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
+        {loaded && <BuckyPanel preferredProfileId={pageProfile||undefined} profiles={profiles} buckets={buckets} transactions={transactions} products={products} sales={sales} employees={employees}
           navigationKey={navigationKey} conversationRequest={requestReady ? request : null} active={(open || inline) && !scanMode && status !== "error"} compact inlineVoice={inline}
           onRecordsChanged={() => void load(true)} onPendingActionChange={setHasPendingAction}
           onNavigateAway={requestClose} onScanRequest={requestScan}/>}

@@ -21,35 +21,37 @@ after(async () => {
   delete process.env.MODEL_API_KEY;
 });
 
-test("health reports mock mode without exposing the key", async () => {
+test("health reports live status without exposing the key or any quota", async () => {
   const res = await fetch(`${baseUrl}/api/health`);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.mode, "mock");
+  // ENABLE_LIVE_META is not "1" in this test process, so live stays disabled even with a key present.
   assert.equal(body.liveMeta, "disabled");
+  assert.equal(body.modelApiKeyConfigured, true);
+  assert.equal("liveRequestsLimit" in body, false);
+  assert.equal("liveRequestsUsed" in body, false);
   assert.equal(JSON.stringify(body).includes(DUMMY_KEY), false);
 });
 
-test("extract returns fictional mock drafts with computed totals", async () => {
-  const res = await fetch(`${baseUrl}/api/extract`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      imageBase64: PNG_BYTES.toString("base64"),
-      mediaType: "image/png",
-      expectedCurrency: "PHP",
-      recordType: "expenses",
-    }),
-  });
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.mode, "mock");
-  assert.equal(body.currency, "PHP");
-  assert.equal(body.totals.expenseMinor, 43000);
-  assert.equal(body.needsReviewCount >= 1, true);
-  const uncertain = body.entries.find((e) => e.amountMinor === null);
-  assert.equal(uncertain.needsReview, true);
-  assert.equal(JSON.stringify(body).includes(DUMMY_KEY), false);
+test("extract rejects missing or mock mode with no fictional entries", async () => {
+  for (const mode of [undefined, "mock", "invalid"]) {
+    const res = await fetch(`${baseUrl}/api/extract`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        imageBase64: PNG_BYTES.toString("base64"),
+        mediaType: "image/png",
+        expectedCurrency: "PHP",
+        recordType: "expenses",
+        ...(mode === undefined ? {} : { mode }),
+      }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.error, "invalid_request");
+    assert.equal("entries" in body, false);
+    assert.equal(JSON.stringify(body).includes(DUMMY_KEY), false);
+  }
 });
 
 test("extract rejects mismatched image bytes with a safe error", async () => {
@@ -60,6 +62,7 @@ test("extract rejects mismatched image bytes with a safe error", async () => {
       imageBase64: Buffer.from("not an image").toString("base64"),
       mediaType: "image/png",
       expectedCurrency: "PHP",
+      mode: "live",
     }),
   });
   assert.equal(res.status, 400);

@@ -1,6 +1,8 @@
-# Bucketa Server (M1A mock + M1B gated live)
+# Bucketa Server
 
-Local Node.js backend for the AI Record Scanner and the Bucky Agent. Mock extraction is the default. **Live Meta calls (M1B) require all three gates:** `ENABLE_LIVE_META=1`, a server-side `MODEL_API_KEY`, and a per-request `x-bucketa-live-test` header matching `LIVE_TEST_TOKEN` — plus a limit of 3 live requests per server session shared by the scanner and Bucky. The scanner UI never sends that header. The Bucky panel sends it only when the user explicitly opts into a live answer and types the token at runtime; the token is never stored, pre-filled, or logged.
+Local Node.js backend for Bucky Financial Intelligence, the Bucky Record Scanner, product photo analysis, and Bucky Creative Studio.
+
+**Live Meta calls require:** `ENABLE_LIVE_META=1`, a server-side `MODEL_API_KEY`, and a local request context — the server binds `127.0.0.1` only and any browser `Origin`/`Host` must be loopback (`server/liveGate.mjs`). There is **no user-entered temporary token** and **no application-imposed per-session request cap**: repeated live requests are allowed, bounded only by the caller's own Meta API account limits, credits, and provider rate limits. Each request makes exactly one upstream attempt (no automatic retries). When live is not configured, Bucky returns a clearly labelled deterministic fallback and the scanner/creative endpoints refuse before any paid call rather than fabricating results. Mock extraction exists only for automated tests.
 
 ## Run
 
@@ -8,34 +10,27 @@ Local Node.js backend for the AI Record Scanner and the Bucky Agent. Mock extrac
 npm run server
 ```
 
-Listens on `http://127.0.0.1:8787` (set `PORT` to change). Keep it on localhost only — this proof of concept has no authentication and must not be exposed to a network.
+Listens on `http://127.0.0.1:8787` (set `PORT` to change). Keep it on localhost only — this backend has no public-internet authentication, CORS alone is not authentication, and it must not be exposed to a network. A public deployment would need real authentication in front of these endpoints.
 
-Environment variables (see `.env.example`): `MODEL_API_KEY` (server-only; only reported as configured yes/no), `ENABLE_LIVE_META`, `LIVE_TEST_TOKEN`, `PORT`. Starting `npm run server` loads the project-root `.env` automatically.
+Environment variables (see `.env.example`): `MODEL_API_KEY` (server-only; only reported as configured yes/no), `ENABLE_LIVE_META` (exactly `1` arms live mode), `PORT`. Starting `npm run server` loads the project-root `.env` automatically. No other credential is used; an old `LIVE_TEST_TOKEN` line is ignored.
 
 ## Endpoints
 
-- `GET /api/health` → `{ ok, mode: "mock", defaultMode: "mock", modelApiKeyConfigured, liveMeta: "enabled-gated" | "disabled", liveRequestsUsed, liveRequestsLimit: 3, buckyAdvise: { endpoint, defaultSource: "deterministic-fallback", liveModel, liveCompatibilityVerified: false } }`. Health never returns key or token values.
-- `POST /api/extract` with JSON `{ imageBase64, mediaType, expectedCurrency, recordType }` → validated fictional draft entries with integer minor-unit amounts, app-computed totals, and `needsReview` flags.
-- `POST /api/bucky/advise` with JSON `{ question, mode, summary }` → Bucky Agent 1.0 advice. `summary` is the aggregated `buildBuckyModelSummary` shape only (per-currency totals/counts; raw records and descriptions are rejected), and the request body is capped at 16,384 bytes while streaming. Default `mode: "fallback"` returns server-computed deterministic advice labelled `source: "deterministic-fallback"`. `mode: "live"` is opt-in and requires the same three live gates plus the shared session limiter; model output (configured Meta model `muse-spark-1.3`, Responses API, strict JSON schema) is validated against an action allowlist and a grounded-numbers check covering the answer, explanation, and limitations. The model is not asked to return evidence: evidence is always recomputed server-side, and any validation/upstream failure returns the labelled deterministic fallback with a safe diagnostic category (and schema sub-reason when applicable). Live text-reasoning compatibility is **not yet verified** against the real API — no live Bucky answer has succeeded yet — and any live call needs separate approval.
+- `GET /api/health` → `{ ok, modelApiKeyConfigured, liveMeta: "enabled" | "disabled", buckyAdvise: { endpoint, defaultSource, liveModel, liveCompatibilityVerified: true }, creativeImage }`. `liveCompatibilityVerified` is scoped to the Bucky advice endpoint only: a real live Bucky Financial Intelligence conversation with `muse-spark-1.3` was manually verified by the developer. Health never returns key values and reports no request quota because Bucketa imposes none.
+- `GET /api/creative/status` → Muse Image (`muse-image-1.0`) availability. A successful real live generation was reported by the developer on 2026-11-03; other accounts need their own image-model access.
+- `POST /api/extract` with JSON `{ imageBase64, mediaType, expectedCurrency, recordType, mode }` → validated draft entries with integer minor-unit amounts, app-computed totals, and `needsReview` flags. `mode` must be `"live"` (the gated Meta path); missing, invalid, or `"mock"` modes are rejected with `invalid_request` and no entries are returned. Mocked Meta responses exist solely inside automated tests, which stub the upstream fetch.
+- `POST /api/bucky/advise` with JSON `{ question, mode, summary }` → advice. `summary` is the aggregated summary shape only (raw records/descriptions are rejected); body capped at 16,384 bytes. `mode: "live"` requires the live gate; model output is validated (action allowlist, grounded-numbers check) and evidence is always recomputed server-side. Failures return the labelled deterministic fallback with a safe diagnostic — never a trusted unvalidated answer.
+- `POST /api/bucky/interpret` with JSON `{ text, mode, context }` → a strictly validated structured proposal (names-only context), cross-checked again in the browser before any preview. Nothing here writes data.
+- `POST /api/products/analyze` with JSON `{ imageBase64, mediaType, mode }` → an editable product draft (visual fields only; never price/stock). Live mode uses the same live gate.
+- `POST /api/creative/edit` with JSON `{ imageBase64, mediaType, prompt, history, mode: "live" }` → one Muse Image edit. Only a validated genuine PNG data URL reaches the browser; non-live requests are refused (501) before any Meta call.
 
 ## Safety rules
 
+- The Meta API key lives only on this server. It is never sent to the browser, never a `VITE_*` variable, and never logged or returned.
 - Uploaded images exist only in memory during the request. Nothing is written to disk or logs; logs hold only method, path, status, duration, and entry count.
-- Request bodies are capped while streaming (7.5 MB for scanner uploads; 16,384 bytes for Bucky advice), and decoded images are capped at 5 MB. Image type is verified from the file bytes, not the declared type. Upstream Meta responses are capped by actual UTF-8 byte length.
-- The bucket's `expectedCurrency` is authoritative. A conflicting detected currency is flagged, never adopted.
-- Missing or uncertain fields are marked `needsReview`. Totals are summed in code from integer minor units; any model-supplied total would be ignored.
-- Errors returned to clients are fixed safe strings. Internal errors and secrets are never exposed.
-- Tests use fictional financial records only: `npm run test:server` (offline, no API key needed).
-
-Live Muse Spark testing is M1B and requires separate approval.
-
-
-## Current voice-to-model routing and product analysis
-
-Speak uses the browser's SpeechRecognition/webkitSpeechRecognition implementation, not a Meta speech-to-text endpoint. The shared speech-language preference explicitly selects en-US or fil-PH; there is no automatic language detection and browser support for Filipino varies. Browser recognition may use its provider's online service. Final transcripts use the same local Bucky parser and record-grounded answer function as typed questions. Clean recognition completion processes the transcript; recognition errors retain a review step. Every financial write still requires a separate confirmation.
-
-Ordinary Speak/Send questions in the current BuckyPanel do not call the Meta advisor. Only the explicit Try AI interpretation control sends an unresolved action request to POST /api/bucky/interpret with runtime live authorization. The existing server Meta client targets muse-spark-1.3 through the Responses API. The configured model and request builder are not proof of successful live inference; live compatibility remains unverified. Spoken answers use browser speechSynthesis, currently in English, with the existing native voice preference and tuning.
-
-POST /api/products/analyze accepts an image and an explicit mock/live mode. Mock results are deterministic fictional product drafts, not image understanding. Live mode reuses the existing server authorization gates, shared request quota, image validation, and structured response validation. No live request is authorized merely by opening the application. Product-photo mock success does not verify the live model.
-
-All live endpoints retain ENABLE_LIVE_META, server-only MODEL_API_KEY, runtime LIVE_TEST_TOKEN/header authorization, and the shared session quota described above. Keep the backend bound to localhost. No speech API key is required. Technical setup belongs here; the Settings guide is intended for ordinary users.
+- Request bodies are capped while streaming (7.5 MB for scanner uploads; 16,384 bytes for Bucky advice), and decoded images are capped at 5 MB. Image type is verified from the file bytes, not the declared type. Upstream Meta responses are capped by byte length.
+- The selected profile/bucket `expectedCurrency` is authoritative. A conflicting detected currency is flagged, never adopted.
+- Missing or uncertain fields are marked `needsReview`. Totals are summed in code from integer minor units; model-supplied totals are ignored.
+- Errors returned to clients are fixed safe strings. Internal errors, credentials, upstream bodies, and stack detail are never exposed.
+- Voice uses the browser's SpeechRecognition/speechSynthesis (not a Meta speech API); every financial write still requires a separate in-app confirmation.
+- Tests use fictional records and mocked Meta fetch only: `npm run test:server` (offline, no API key, no paid calls).

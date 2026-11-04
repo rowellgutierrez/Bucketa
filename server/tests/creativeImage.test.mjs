@@ -15,8 +15,8 @@ import {
 const PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
-const disabledConfig = { host: "127.0.0.1", port: 0, modelApiKeyConfigured: false, liveMetaEnabled: false, liveTestTokenConfigured: false };
-const liveConfig = { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true };
+const disabledConfig = { host: "127.0.0.1", port: 0, modelApiKeyConfigured: false, liveMetaEnabled: false };
+const liveConfig = { host: "127.0.0.1", port: 0, modelApiKeyConfigured: true, liveMetaEnabled: true };
 
 async function withServer(config, fetchImpl, fn) {
   const server = createAppServer(config, { fetchImpl });
@@ -32,12 +32,13 @@ function jsonResponse(status, value) {
 test("status reports disabled by default and the fixed Muse Image model", () => {
   const off = creativeImageStatus();
   assert.equal(off.available, false);
-  assert.equal(off.verified, false);
-  assert.equal(IMAGE_EDITING_VERIFIED, false);
+  // Developer-reported successful live generation (2026-11-03).
+  assert.equal(off.verified, true);
+  assert.equal(IMAGE_EDITING_VERIFIED, true);
   assert.equal(off.model, "muse-image-1.0");
-  const on = creativeImageStatus({ liveMetaEnabled: true, modelApiKeyConfigured: true, liveTestTokenConfigured: true });
+  const on = creativeImageStatus({ liveMetaEnabled: true, modelApiKeyConfigured: true });
   assert.equal(on.available, true);
-  assert.match(on.reason, /unverified/i); // account access still unverified
+  assert.match(on.reason, /configured/i);
 });
 
 test("request builder uses the Playground Responses structure exactly", () => {
@@ -114,23 +115,22 @@ test("non-live edit is refused 501 before any Meta call", async () => {
   });
 });
 
-test("live edit without the token is rejected 403 before any Meta call", async () => {
+test("live edit from a disallowed origin is rejected 403 before any Meta call", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   let calls = 0;
   await withServer(liveConfig, async () => { calls += 1; throw new Error("must not be called"); }, async (base) => {
     const res = await fetch(`${base}/api/creative/edit`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
       body: JSON.stringify({ imageBase64: PNG_B64, mediaType: "image/png", prompt: "Make it darker", mode: "live" }),
     });
     assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "live_unauthorized");
     assert.equal(calls, 0);
   });
 });
 
 test("mocked live edit returns the validated PNG and sends one upstream request", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push({ url, body: JSON.parse(init.body) });
@@ -139,7 +139,7 @@ test("mocked live edit returns the validated PNG and sends one upstream request"
   await withServer(liveConfig, fetchImpl, async (base) => {
     const res = await fetch(`${base}/api/creative/edit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": "test-token-not-real" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageBase64: PNG_B64, mediaType: "image/png", prompt: "Make the background darker", mode: "live", history: [{ prompt: "Improve lighting" }] }),
     });
     assert.equal(res.status, 200);
@@ -156,7 +156,6 @@ test("mocked live edit returns the validated PNG and sends one upstream request"
 
 test("mocked live follow-up sends the latest generated image as the next input", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push(JSON.parse(init.body));
@@ -168,7 +167,7 @@ test("mocked live follow-up sends the latest generated image as the next input",
     // that image with the new instruction and prior prompt context.
     const res = await fetch(`${base}/api/creative/edit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": "test-token-not-real" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageBase64: PNG_B64, mediaType: "image/png", prompt: "Add warm lighting", mode: "live", history: [{ prompt: "Improve lighting" }] }),
     });
     assert.equal(res.status, 200);
@@ -184,7 +183,7 @@ test("live edit rejects unsupported images with 400 before any Meta call", async
   await withServer(liveConfig, async () => { calls += 1; throw new Error("must not be called"); }, async (base) => {
     const res = await fetch(`${base}/api/creative/edit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-bucketa-live-test": "test-token-not-real" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageBase64: Buffer.from("not an image").toString("base64"), mediaType: "image/png", prompt: "Make it darker", mode: "live" }),
     });
     assert.equal(res.status, 400);

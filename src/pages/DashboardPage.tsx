@@ -388,8 +388,8 @@ export default function DashboardPage() {
               view === "business"
                 ? businessId
                 : view === "personal"
-                  ? personalProfiles[0]?.id
-                  : (personalProfiles[0]?.id ?? businessProfiles[0]?.id)
+                  ? (personalProfiles.length===1?personalProfiles[0]?.id:undefined)
+                  : undefined
             }
           />
         </div>

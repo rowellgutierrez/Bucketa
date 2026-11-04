@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import {recordBuckyEvent} from "../lib/buckyPresentation";
 import PageHeader from "../components/ui/PageHeader";
 import Icon from "../components/ui/Icon";
@@ -94,6 +95,7 @@ export default function PersonalPage() {
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [notice, setNotice] = useState("");

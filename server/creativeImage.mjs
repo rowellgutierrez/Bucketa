@@ -13,36 +13,38 @@ import { metaDiagnosticError } from "./metaDiagnostics.mjs";
  *          (image_url as a base64 data URL)
  *   tools: [{ type: "image_generation", output_format: "png" }]
  *
- * Remaining unverified points (flagged, not hidden):
- * - Account-level Muse Image access for the configured key.
- * - The exact generated-image field in a real response envelope.
- *   The parser below accepts the Responses image_generation_call
- *   result and an output_image content part, then strictly validates
- *   that the bytes are a real PNG before anything reaches the UI.
- *   Anything else fails safely as invalid_envelope — never faked.
+ * Verification note: the developer reported a successful real live
+ * generation on 2026-11-03. A different account/key still needs its
+ * own Muse Image access. The parser below accepts the Responses
+ * image_generation_call result and an output_image content part, then
+ * strictly validates that the bytes are a real PNG before anything
+ * reaches the UI. Anything else fails safely — never faked.
  *
  * Live sending exists ONLY behind the gates in server.mjs
- * (assertLiveAllowed + shared liveLimiter). This module is never
+ * (assertLiveAllowed; no session request cap). This module is never
  * called from the browser and never retries.
  */
 
 export const META_IMAGE_MODEL = "muse-image-1.0";
 export const META_IMAGE_ENDPOINT_PATH = "/responses";
-export const IMAGE_EDITING_VERIFIED = false; // account access unverified
+// Developer-reported successful live generation with a real Meta AI
+// request (2026-11-03). Other accounts still need their own key with
+// Muse Image access; failures fail safely and are never faked.
+export const IMAGE_EDITING_VERIFIED = true;
 export const CREATIVE_MAX_PROMPT_CHARS = 1000;
 export const CREATIVE_MAX_TURNS = 20;
 export const MAX_GENERATED_IMAGE_BYTES = 10_000_000;
 
-export function creativeImageStatus({ liveMetaEnabled = false, modelApiKeyConfigured = false, liveTestTokenConfigured = false } = {}) {
-  const configured = Boolean(liveMetaEnabled && modelApiKeyConfigured && liveTestTokenConfigured);
+export function creativeImageStatus({ liveMetaEnabled = false, modelApiKeyConfigured = false } = {}) {
+  const configured = Boolean(liveMetaEnabled && modelApiKeyConfigured);
   return {
     available: configured,
     verified: IMAGE_EDITING_VERIFIED,
     model: META_IMAGE_MODEL,
     endpoint: META_IMAGE_ENDPOINT_PATH,
     reason: configured
-      ? "Live Muse Image editing is configured on the server. Account access is unverified until the first approved controlled test — Generate sends one gated request only when you enter the live test token."
-      : "Live Muse Image editing is disabled on this server (live flag, API key, and live test token are not all configured). No image is sent to Meta and nothing is charged.",
+      ? "Live Muse Image editing is configured on the server. A real live generation was reported successful by the developer; Generate sends one request per tap with no automatic retries."
+      : "Live Muse Image editing is not configured on this server (set ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY). No image is sent to Meta and nothing is charged.",
   };
 }
 

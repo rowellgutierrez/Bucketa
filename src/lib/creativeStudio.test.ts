@@ -13,12 +13,18 @@ import {
 
 const turn = (id: string, resultDataUrl: string | null, status: StudioTurn["status"] = "done"): StudioTurn => ({ id, prompt: `p-${id}`, resultDataUrl, status });
 
-test("live generation fails before any network call without a runtime token", async () => {
+test("live generation needs no user token and never sends one", async () => {
   const payload = buildCreativeEditPayload("data:image/png;base64,QUJD", "Make it darker", [])!;
-  let calls = 0;
-  const fakeFetch = (async () => { calls += 1; throw new Error("must not be called"); }) as unknown as typeof fetch;
-  await assert.rejects(() => requestCreativeEdit(payload, {}, fakeFetch), /live test token/);
-  assert.equal(calls, 0);
+  let seenHeaders: unknown = null;
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    seenHeaders = init?.headers;
+    return new Response(JSON.stringify({ imageDataUrl: png }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as unknown as typeof fetch;
+  const result = await requestCreativeEdit(payload, fakeFetch);
+  assert.equal(result.dataUrl, png);
+  assert.equal(JSON.stringify(seenHeaders).includes("live-test"), false);
+  assert.equal(JSON.stringify(seenHeaders).toLowerCase().includes("token"), false);
 });
 
 test("label sizes remain available for barcode labels", () => {

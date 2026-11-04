@@ -3,19 +3,15 @@
  *
  * The browser only ever talks to the same-origin `/api` routes (proxied
  * to the local Node server in development). The Meta API key stays
- * server-side only. A live-test token is never hard-coded, persisted, or
- * logged here; it is only forwarded when a caller supplies one at runtime
- * for an explicitly requested live extraction.
+ * server-side only; the browser never holds a Meta credential and
+ * never asks the user for a temporary token. Live mode is configured
+ * on the server (ENABLE_LIVE_META=1 + MODEL_API_KEY + loopback origin).
  */
 
 export interface ScannerHealth {
   ok: true;
-  mode: "mock";
-  defaultMode: "mock";
   modelApiKeyConfigured: boolean;
-  liveMeta: "enabled-gated" | "disabled";
-  liveRequestsUsed: number;
-  liveRequestsLimit: number;
+  liveMeta: "enabled" | "disabled";
 }
 
 export type ScannerRecordType =
@@ -31,23 +27,15 @@ export interface ExtractRequest {
   recordType: ScannerRecordType;
 }
 
-export type ScannerExtractionMode = "mock" | "live";
+export type ScannerExtractionMode = "live";
 
 export interface ScannerExtractionOptions {
   mode?: ScannerExtractionMode;
-  /**
-   * Runtime-supplied local live-test token. This must never be hard-coded,
-   * persisted, or logged by callers; it is forwarded only for one live call.
-   */
-  liveTestToken?: string;
 }
 
-/** Live UI is available only in Vite development with a gated backend. */
-export function isLiveScannerAvailable(
-  isDevelopment: boolean,
-  health: ScannerHealth | null,
-): boolean {
-  return isDevelopment && health?.liveMeta === "enabled-gated";
+/** Live AI Scan is available whenever the backend reports live Meta AI configured. */
+export function isLiveScannerAvailable(health: ScannerHealth | null): boolean {
+  return health?.liveMeta === "enabled";
 }
 
 export interface ExtractedEntry {
@@ -82,20 +70,18 @@ export interface ExtractionTotals {
 }
 
 export interface ExtractResponse {
-  mode: "mock" | "live";
+  mode: "live";
   recordType: ScannerRecordType;
   currency: string;
   /**
    * Written document-level grand total, transcribed separately from the
-   * entries. Optional for compatibility with older/mock responses that
-   * do not provide one; null means no readable total was reported.
+   * entries. Optional for compatibility with responses that do not provide one; null means no readable total was reported.
    */
   documentTotalText?: string | null;
   documentTotalMinor?: number | null;
   entries: ExtractedEntry[];
   totals: ExtractionTotals;
   needsReviewCount: number;
-  liveRequestsUsed?: number;
 }
 
 /** Safe, user-facing scanner error. Never carries server internals. */
@@ -123,10 +109,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_request: "The request could not be understood.",
   invalid_currency: "The bucket currency is not a valid ISO 4217 code.",
   extraction_unavailable: "Extraction is unavailable right now.",
-  live_disabled: "Live Meta testing is not enabled on this server.",
-  live_unauthorized: "Live Meta testing was not authorized for this request.",
-  live_limit_reached:
-    "The live test request limit for this server session has been reached.",
+  live_disabled: "Live AI Scan is not configured on this server. Set ENABLE_LIVE_META=1 and a server-side MODEL_API_KEY, then restart the server.",
+  live_unauthorized: "Live AI Scan was not authorized for this request. Open Bucketa from localhost as documented; cross-origin requests are rejected.",
   meta_unavailable:
     "The Meta Model API could not be reached or returned an unusable response.",
   not_found: "The scanner service was not found.",
@@ -178,11 +162,8 @@ function isHealth(payload: unknown): payload is ScannerHealth {
   const health = payload as Record<string, unknown>;
   return (
     health.ok === true &&
-    health.mode === "mock" &&
     typeof health.modelApiKeyConfigured === "boolean" &&
-    (health.liveMeta === "enabled-gated" || health.liveMeta === "disabled") &&
-    typeof health.liveRequestsUsed === "number" &&
-    typeof health.liveRequestsLimit === "number"
+    (health.liveMeta === "enabled" || health.liveMeta === "disabled")
   );
 }
 
@@ -199,7 +180,7 @@ function isExtractResponse(payload: unknown): payload is ExtractResponse {
   if (!payload || typeof payload !== "object") return false;
   const result = payload as Record<string, unknown>;
   return (
-    (result.mode === "mock" || result.mode === "live") &&
+    result.mode === "live" &&
     typeof result.currency === "string" &&
     Array.isArray(result.entries) &&
     typeof result.needsReviewCount === "number" &&
@@ -321,32 +302,23 @@ export async function prepareScannerImage(file: File): Promise<PreparedScannerIm
 }
 
 /**
- * Request extraction for one image. Mock mode is the default for every
- * existing caller. Live mode is sent only when explicitly requested, and a
- * live request without a runtime-supplied non-empty token fails before any
- * network call rather than silently falling back to mock.
+ * Request extraction for one image. Live Meta AI is the only production
+ * extraction mode — there is no mock mode, mock selector, or fallback
+ * that fabricates entries. Mocked Meta responses exist solely inside
+ * automated tests (which stub fetch).
  */
 export async function requestExtraction(
   request: ExtractRequest,
   options: ScannerExtractionOptions = {},
 ): Promise<ExtractResponse> {
-  const mode = options.mode ?? "mock";
+  const mode = options.mode ?? "live";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (mode === "live") {
-    const liveTestToken = options.liveTestToken;
-    if (!liveTestToken || liveTestToken.trim().length === 0) {
-      throw new ScannerApiError(
-        "live_token_required",
-        "Enter the live test token provided by the local server operator before requesting a live scan.",
-      );
-    }
-    headers["x-bucketa-live-test"] = liveTestToken;
-  } else if (mode !== "mock") {
+  if (mode !== "live") {
     throw new ScannerApiError(
       "invalid_request",
-      "Choose mock or live extraction before scanning.",
+      "Live AI Scan is the only scanning mode. No records were created.",
     );
   }
   const { payload } = await requestJson(

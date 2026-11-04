@@ -5,6 +5,8 @@ import {
   analyzeBuckyFinances,
   answerBuckyQuestion,
   buildBuckyModelSummary,
+  buildBuckyConversationSummary,
+  answerBuckyConversation,
 } from "./buckyAgent.ts";
 
 const stamp = "2026-10-15T12:00:00.000Z";
@@ -527,3 +529,7 @@ test("best-selling products and earned-today come from completed sales and dated
   assert.ok(bonus.facts.some(f=>f.value.includes('50.00')));assert.ok(!bonus.facts.some(f=>f.value.includes('1,050')));
   assert.equal(answerBuckyQuestion('What is Maria salary rate?',a).insufficientData,true);
  });
+
+test('Ordinary conversation attaches no personal/business financial context',()=>{
+ const context=buildBuckyConversationSummary();assert.equal(context.conversationOnly,true);assert.deepEqual(context.currencies,[]);assert.deepEqual(context.savingsGoals,[]);assert.deepEqual(context.insightKinds,[]);assert.equal(context.profileName,'Bucketa');const answer=answerBuckyConversation();assert.deepEqual(answer.facts,[]);assert.equal(/Sofia|PHP|USD|₱/.test(answer.answer),false);
+});

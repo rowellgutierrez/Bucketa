@@ -1,9 +1,9 @@
 import {recordBuckyEvent,setBuckyPhase,getBuckyPresentation,subscribeBuckyPresentation,ACTION_STATUS_LABELS,type BuckyPhase} from "../lib/buckyPresentation";
-import {getBuckyDraft,setBuckyDraft,subscribeBuckyDraft} from "../lib/buckyConversation";
+import {getBuckyDraft,setBuckyDraft,subscribeBuckyDraft,scopedBuckyHistory,createBuckySubmissionGate} from "../lib/buckyConversation";
 import type { BuckyConversationRequest } from "../lib/buckyConversation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Bucket, Employee, Product, Profile, Sale, Transaction } from "../data/types.ts";
-import { bucketsRepo, createTransactionConfirmed, employeesRepo, productsRepo } from "../data/db.ts";
+import { bucketsRepo, incrementProductStock, createTransactionConfirmed, employeesRepo, productsRepo } from "../data/db.ts";
 import { findSkuConflict, newId, nowIso, validateBucket, validateEmployee, validateProduct, validateTransaction } from "../data/validation.ts";
 import { formatMoney } from "../lib/currency.ts";
 import { notifyRecordsChanged } from "../lib/dataChange.ts";
@@ -23,6 +23,9 @@ import {
   analyzeBuckyFinances,
   answerBuckyQuestion,
   buildBuckyModelSummary,
+  isRecordQuestion,
+  buildBuckyConversationSummary,
+  answerBuckyConversation,
   type BuckyAnswer,
   type BuckyProposal,
 } from "../lib/buckyAgent.ts";
@@ -36,7 +39,8 @@ import {
   buildBucketRecord,
   buildEmployeeRecord,
   interpretAppAction,
-  resolveNamedProfile,
+  resolveBuckyRecordProfile,
+  isGeneralBuckyConversation,
   queuePosCartHandoff,
   POS_CART_HANDOFF_KEY,
   type AppActionProposal,
@@ -66,11 +70,10 @@ import {
 } from "../lib/buckyVoice.ts";
 import {
   buckyAdviceMode,
-  buckyLiveUnavailableNote,
   createAdviceSubmissionGuard,
-  describeAdviceSource,
-  getBuckyLiveSettings,
-  subscribeBuckyLiveSettings,
+  getLiveAvailability,
+  refreshLiveAvailability,
+  subscribeLiveAvailability,
 } from "../lib/buckyLiveSettings.ts";
 import {
   loadVoiceSettings,
@@ -149,6 +152,7 @@ function goToRoute(route: string) {
  * commit-confirmed data function.
  */
 export default function BuckyPanel({ profiles, buckets, transactions, products, sales, employees = [], preferredProfileId, onRecordsChanged, onPendingActionChange, onNavigateAway, onScanRequest, conversationRequest, active = true, compact = false, inlineVoice = false, navigationKey }: Props) {
+  const activeRef=useRef(active);activeRef.current=active;
   const presentation = useSyncExternalStore(subscribeBuckyPresentation,getBuckyPresentation,getBuckyPresentation);
   const [interactionPhase,setInteractionPhase] = useState<BuckyPhase>("idle");
   const [speechPending,setSpeechPending] = useState(false);
@@ -162,6 +166,8 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   // previews stay as live cards below the thread (Confirm/Cancel intact).
   const [thread, setThread] = useState<{ id: number; role: "user" | "bucky"; text: string; profileId?: string; profileName?: string; facts: { label: string; value: string }[]; proposalIds: string[] }[]>([]);
   const msgIdRef = useRef(0);
+  const messageOwnerRef=useRef<Profile|null>(null);
+  const submissionGate=useRef(createBuckySubmissionGate()).current;
   const [voiceHistoryExpanded,setVoiceHistoryExpanded]=useState(false);
   const [voiceSessionStart,setVoiceSessionStart]=useState(0);
   const voiceMessages=inlineVoice?thread.filter(msg=>msg.id>voiceSessionStart):thread;
@@ -169,7 +175,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const followLatest=useRef(true);
   function pushMsg(role: "user" | "bucky", text: string, facts: { label: string; value: string }[] = [], proposalIds: string[] = []) {
     const id = ++msgIdRef.current;
-    setThread((prev) => [...prev.slice(-39), { id, role, text, facts, proposalIds, profileId: profile?.id, profileName: profile?.name }]);
+    setThread((prev) => [...prev.slice(-39), { id, role, text, facts, proposalIds, profileId: messageOwnerRef.current?.id, profileName: messageOwnerRef.current?.name }]);
   }
   // Every new Bucky answer joins the thread exactly once (object identity
   // guards StrictMode double-effects and re-renders).
@@ -180,10 +186,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       pushMsg("bucky", answer.answer, answer.facts, answer.proposalIds);
     }
   }, [answer]);
-  // Live Meta AI settings are shared, memory-only state managed in
-  // Settings → Bucky & Voice (buckyLiveSettings). Never persisted here.
-  const liveSettings = useSyncExternalStore(subscribeBuckyLiveSettings, getBuckyLiveSettings, getBuckyLiveSettings);
-  const liveToken = liveSettings.token;
+  // Live Meta AI availability is discovered from the backend health
+  // check. When configured on the server, Bucky uses the real Meta
+  // model by default; no user token is ever requested here.
+  const liveAvailability = useSyncExternalStore(subscribeLiveAvailability, getLiveAvailability, getLiveAvailability);
+  useEffect(() => { void refreshLiveAvailability(); }, []);
   const adviceGuardRef = useRef(createAdviceSubmissionGuard());
   // Voice (Phase 1): browser speech only. Never auto-starts; speech only
   // follows a voice question or an explicit Listen tap.
@@ -212,9 +219,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recognitionCancelledRef = useRef(false);
   // Continuous-recognition bookkeeping (Phase B3): an intentional Done
-  // tap (stopRequested) ends into the review step; an unexpected end may
-  // restart a bounded number of times; an error or Cancel never restarts
-  // and never auto-executes a partial transcript.
+  // tap (stopRequested) settles the transcript for automatic sending; an
+  // unexpected end may restart a bounded number of times; an error or
+  // Cancel never restarts and never auto-executes a partial transcript.
   const recognitionStopRequestedRef = useRef(false);
   const recognitionErrorRef = useRef("");
   const recognitionRestartsRef = useRef(0);
@@ -222,7 +229,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   const finalTranscriptRef = useRef("");
   // Trailing-silence auto-finish: every recognition result (interim or
   // final) stamps lastResultAtRef and (re)arms the timer; ~3s without a
-  // result stops listening into the review step. Done stays available.
+  // result stops listening and settles the transcript. Done stays available.
   const silenceTimerRef = useRef<number | null>(null);
   const lastResultAtRef = useRef(0);
   // One-shot mascot reaction clip (existing GLB clips only), shown for a
@@ -278,13 +285,15 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     [],
   );
 
-  // Follow the dashboard's focused profile until the user picks another.
+  const appliedPageProfile=useRef('');
+  // Page context is applied once per selection change; pending previews remain pinned.
   useEffect(() => {
-    if (preferredProfileId && profiles.some((p) => p.id === preferredProfileId)) {
+    if (appliedPageProfile.current!==preferredProfileId && !hasPendingPreview && !actionBusy && !productBusy && !appBusy && !interpretBusy && !serverBusy && preferredProfileId && profiles.some((p) => p.id === preferredProfileId)) {
       setInteractionPhase("idle");
+      appliedPageProfile.current=preferredProfileId;
       setSelectedProfileId(preferredProfileId);
     }
-  }, [preferredProfileId, profiles]);
+  }, [preferredProfileId, profiles, hasPendingPreview, actionBusy, productBusy, appBusy, interpretBusy, serverBusy]);
 
   const profile =
     profiles.find((p) => p.id === selectedProfileId) ??
@@ -293,10 +302,10 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   useEffect(() => {
     if(!active)return;
-    const phase:BuckyPhase=voicePhase==='listening'?'listening':voicePhase==='speaking'?'speaking':actionBusy||productBusy||appBusy||interpretBusy||voicePhase==='processing'||speechPending||micPending?'processing':interactionPhase==='error'?'error':hasPendingPreview?'review':interactionPhase;
+    const phase:BuckyPhase=voicePhase==='listening'?'listening':voicePhase==='speaking'?'speaking':actionBusy||productBusy||appBusy||interpretBusy||voicePhase==='processing'||speechPending||micPending||serverBusy?'processing':interactionPhase==='error'?'error':hasPendingPreview?'review':interactionPhase;
     const labels:Record<BuckyPhase,string>={idle:'',listening:'Listening',speaking:'Speaking',processing:micPending?'Starting microphone':speechPending?'Preparing spoken response':'Working',review:'Awaiting confirmation',success:'Saved',error:'',cancelled:'Cancelled',warning:''};
     setBuckyPhase(phase,labels[phase],profile?.id);
-  },[active,voicePhase,actionBusy,productBusy,appBusy,interpretBusy,speechPending,micPending,hasPendingPreview,interactionPhase,profile?.id]);
+  },[active,voicePhase,actionBusy,productBusy,appBusy,interpretBusy,speechPending,micPending,hasPendingPreview,interactionPhase,serverBusy,profile?.id]);
 
   useEffect(() => {
     const action=pendingAction??pendingProduct??pendingAppAction;if(!action)return;
@@ -365,7 +374,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
   canResumeVoiceRef.current=()=>active&&inlineVoice&&!hasPendingPreview&&!actionBusy&&!productBusy&&!appBusy&&!interpretBusy&&!speechPending&&!micPending&&!recognitionRef.current&&voicePhase!=='review'&&!window.speechSynthesis?.speaking;
   function resumeVoice(){continuousVoice.resume(()=>canResumeVoiceRef.current(),()=>listenAfterGreetingRef.current());}
   function speakText(text: string, afterEnd?:()=>void) {
-    if (!ttsSupported || !text.trim()) return;
+    // No speech available: never strand an active voice conversation —
+    // re-arm listening instead of silently ending the turn cycle.
+    if (!ttsSupported || !text.trim()) { resumeVoice(); return; }
     // Echo prevention: never listen while Bucky speaks. Stop any live
     // recognition first so Bucky's own voice can't become a new turn.
     if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* already ended */ } recognitionRef.current = null; }
@@ -415,9 +426,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     onPendingActionChange?.(hasPendingPreview);
   }, [hasPendingPreview, onPendingActionChange]);
 
-  async function ask(text: string, viaVoice = false) {
+  async function ask(text: string, viaVoice = false, handoff = false) {
     const q = text.trim();
-    if (!q || !analysis || !profile) return;
+    if (!q) return;
     if (adviceGuardRef.current.isPending()) {
       setActionError("Bucky is still answering — wait for that answer before sending another request.");
       return;
@@ -429,25 +440,39 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
     // Echo guard: Bucky's own spoken words never become a new request.
     if (viaVoice && isEchoOfSpeech(q, lastSpokenRef.current)) { resumeVoice(); return; }
-    // The input is cleared once a request is successfully processed into
-    // a preview or an answer; it is preserved verbatim whenever Bucky asks
-    // a clarification or declines, so the user can edit and resend it.
+    const accepted=submissionGate.accept(q,!viaVoice&&!handoff);if(!accepted)return;
+    try {
     setInteractionPhase("idle");
-    setActionError("");setProductError("");
+    setActionError("");setProductError("");setServerNote("");
     setLastQuestion(q);
-    pushMsg("user", q);
+
     setAiInterpretText("");
     setInterpretNote("");
     // Read-only financial analysis questions skip every write interpreter
     // and go straight to Q&A below (deterministic, or live Meta AI when
     // enabled). Explicit creation commands are never classified this way.
     const analysisQuestion = isFinancialAnalysisQuestion(q);
+    const acrossBusinesses=/\b(?:compare|across|all|both)\b[^.!?]*\bbusinesses\b/i.test(q);
+    const recordQuestion=(acrossBusinesses||detectUnsupportedAction(q)||isRecordQuestion(q)||/^(?:(?:hi|hey)\s+)?(?:bucky[,!\s]+)?(?:please\s+)?(?:add|create|record|log|pay|deposit|contribute|restock|increase)\b/i.test(q))&&!isGeneralBuckyConversation(q);
 
+    if(!recordQuestion){
+      const voiceRequestEpoch=utteranceIdRef.current;
+      messageOwnerRef.current=null;pushMsg('user',q);const fallback=answerBuckyConversation();
+      if(buckyAdviceMode(liveAvailability)==='live'){
+        if(!adviceGuardRef.current.tryStart())return;setServerBusy(true);setServerNote('');
+        try{const response=await requestBuckyAdvice(q,buildBuckyConversationSummary(),{mode:'live',history:scopedBuckyHistory(thread,'')});setAnswer({answer:response.answer,facts:[],proposalIds:[],insufficientData:false});setServerNote(response.source==='meta-live'?'':'Live Meta AI was unavailable. This is a deterministic help response; no live answer was used.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(response.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
+        catch(error){setAnswer(fallback);setServerNote('Live Meta AI was unavailable. This is a deterministic help response; no live answer was used.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(fallback.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
+        finally{adviceGuardRef.current.finish();setServerBusy(false);}
+      }else{setAnswer(fallback);setServerNote('Deterministic help response. Live Meta AI is not configured on the server; no paid request was made.');if(viaVoice&&voiceResponsesOnRef.current&&activeRef.current&&utteranceIdRef.current===voiceRequestEpoch)speakText(prepareSpeechText(fallback.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}}
+      return;
+    }
     // App-wide routing: an explicitly named profile is used for THIS
-    // request only. The selected profile is never silently switched, and
+    // request only. The target profile is resolved before any preview, and
     // ambiguous or unknown names clarify instead of guessing.
-    const named = resolveNamedProfile(q, profiles);
+    if(acrossBusinesses){messageOwnerRef.current=null;pushMsg('user',q);const note={answer:'I can provide accurate financial answers for one profile at a time. Cross-business comparisons are not supported yet; name a business and I can report its recorded figures separately.',facts:[],proposalIds:[],insufficientData:true};setAnswer(note);if(viaVoice&&voiceResponsesOnRef.current)speakText(prepareSpeechText(note.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}return;}
+    const named = resolveBuckyRecordProfile(q, profiles,{pageProfileId:preferredProfileId??conversationRequest?.profileId,products:effectiveProducts,employees,buckets});
     if (named.status === "ambiguous" || named.status === "named-missing") {
+      messageOwnerRef.current=null;pushMsg("user",q);
       const businesses = profiles.filter((p) => p.kind === "business").map((p) => p.name).join(", ");
       const note: BuckyAnswer = { answer: named.status === "ambiguous" ? `More than one profile matches that name (${named.profiles.map((p) => p.name).join(", ")}). Please use the full, exact profile name — nothing was changed.` : `I couldn't find a business named "${named.name}".${businesses ? ` Your businesses: ${businesses}.` : ""} Nothing was changed.`, facts: [], proposalIds: [], insufficientData: true };
       setAnswer(note);
@@ -455,9 +480,14 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       else if (viaVoice) { setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice(); }
       return;
     }
-    const routedProfile = named.status === "matched" ? named.profile : profile;
+    if(named.status==='none'){
+      messageOwnerRef.current=null;pushMsg('user',q);const note={answer:profiles.length?'Which business or personal profile should I use? Please name it so I can give an accurate answer or prepare the right preview.':'Create a business or personal profile before requesting recorded financial information or changes.',facts:[],proposalIds:[],insufficientData:true};setAnswer(note);if(viaVoice&&voiceResponsesOnRef.current)speakText(prepareSpeechText(note.answer));else if(viaVoice){setVoicePhase(p=>voiceTransition(p,'reset'));resumeVoice();}return;
+    }
+    const routedProfile = named.profile;
+    setSelectedProfileId(routedProfile.id);
+    messageOwnerRef.current=routedProfile;pushMsg("user",q);
     let routedAnalysis = analysis;
-    if (routedProfile.id !== profile.id) {
+    if (!routedAnalysis || routedProfile.id !== profile?.id) {
       try { routedAnalysis = analyzeBuckyFinances({ profile: routedProfile, buckets, transactions: effectiveTransactions, products: effectiveProducts, sales, employees }); }
       catch { setAnswer({ answer: `I couldn't read records for "${routedProfile.name}". Nothing was changed.`, facts: [], proposalIds: [], insufficientData: true }); return; }
     }
@@ -478,7 +508,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       setSavedResult(null);
       setProductError("");
       setActionError("");
-      setQuestion("");
       setAnswer({
         answer: "Here's the product I understood. Review the preview below — nothing is created until you tap Confirm.",
         facts: [],
@@ -515,7 +544,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       pendingViaVoiceRef.current = viaVoice;
       setPendingAppAction(appInterpretation.action);
       setPendingAction(null); setPendingProduct(null);
-      setSavedResult(null); setAppError(""); setQuestion("");
+      setSavedResult(null); setAppError("");
       setAnswer({ answer: "Here's what I understood. Review the preview below — nothing changes until you tap Confirm.", facts: [], proposalIds: [], insufficientData: false });
       if (viaVoice && voiceResponsesOnRef.current) speakText("I've prepared a preview. Please check the details on screen, then tap Confirm. Nothing has changed yet.");
       else if (viaVoice) setVoicePhase((p) => voiceTransition(p, "reset"));
@@ -545,7 +574,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       setPendingProduct(null);
       setSavedResult(null);
       setActionError("");
-      setQuestion("");
       const previewNote: BuckyAnswer = {
         answer: "Here's what I understood. Review the preview below — nothing is saved until you tap Confirm save.",
         facts: [],
@@ -590,68 +618,45 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       return;
     }
     const next = answerBuckyQuestion(q, routedAnalysis);
-    // Ordinary questions: when the user has explicitly enabled live Meta
-    // AI in Settings → Bucky & Voice (toggle + memory-only token), route
-    // through the gated /api/bucky/advise path — exactly one request per
-    // intentional submission, guarded against double-submission. Action
-    // previews above never take this path and are never auto-confirmed.
-    if (buckyAdviceMode(liveSettings) === "live") {
-      if (!adviceGuardRef.current.tryStart()) return;
+    // Financial Q&A: when live Meta AI is configured on the server, ask
+    // the real model by default with the grounded aggregated summary.
+    // A labelled deterministic fallback is used only when live is not
+    // configured or the live response fails validation — never
+    // presented as a successful Meta AI response.
+    let displayAnswer: BuckyAnswer = next;
+    if (buckyAdviceMode(liveAvailability) === "live" && adviceGuardRef.current.tryStart()) {
       setServerBusy(true);
-      setServerNote("Asking live Meta AI…");
       try {
-        const history = thread.slice(-6).map((m) => ({ role: m.role === "user" ? "user" as const : "bucky" as const, text: m.text.slice(0, 500) }));
-        const res = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis), { mode: "live", liveTestToken: liveToken, history });
-        const liveAnswer: BuckyAnswer = { answer: res.answer, facts: res.evidence, proposalIds: [], insufficientData: false };
-        setAnswer(liveAnswer);
-        setServerNote(describeAdviceSource(res));
-        setQuestion("");
-        if (looksLikeActionAttempt(q)) setAiInterpretText(q);
-        if (viaVoice && voiceResponsesOnRef.current) {
-          speakText(prepareSpeechText(liveAnswer.answer, liveAnswer.facts));
-        } else if (viaVoice) {
-          setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice();
+        const response = await requestBuckyAdvice(q, buildBuckyModelSummary(routedAnalysis, q), { mode: "live", history: scopedBuckyHistory(thread, "") });
+        if (response.source === "meta-live") {
+          // Genuine live answer: no status/provenance line is shown.
+          displayAnswer = { answer: response.answer, facts: response.evidence, proposalIds: [], insufficientData: false };
+        } else {
+          setServerNote("Live Meta AI was unavailable, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.");
         }
-      } catch (error) {
-        // Gate/limit/offline failures happen before any trusted model
-        // answer: use the deterministic answer and say so plainly — this
-        // is a labelled fallback, never a silent downgrade or a retry.
-        setAnswer(next);
-        if (next.insufficientData) setInteractionPhase("error");
-        setServerNote(
-          error instanceof BuckyApiError
-            ? `Live Meta AI couldn't be used: ${error.message} Bucky answered deterministically instead — no live answer was used.`
-            : "Live Meta AI couldn't be used. Bucky answered deterministically instead — no live answer was used.",
-        );
-        setQuestion("");
-        if (looksLikeActionAttempt(q)) setAiInterpretText(q);
-        if (viaVoice && voiceResponsesOnRef.current) {
-          speakText(prepareSpeechText(next.answer, next.facts));
-        } else if (viaVoice) {
-          setVoicePhase((p) => voiceTransition(p, "reset")); resumeVoice();
-        }
+      } catch {
+        setServerNote("Live Meta AI was unavailable, so Bucky used a deterministic fallback calculated from your records. No model answer was trusted.");
       } finally {
         adviceGuardRef.current.finish();
         setServerBusy(false);
       }
-      return;
+    } else if (buckyAdviceMode(liveAvailability) !== "live") {
+      setServerNote(recordQuestion
+        ? "Exact financial answer calculated from the target profile's records. Unsupported date ranges are not inferred; no live request was made."
+        : "Answered deterministically from your recorded data. Live Meta AI is not configured on the server, so no paid request was made.");
     }
-    setAnswer(next);
-    setServerNote(
-      buckyLiveUnavailableNote(liveSettings) ??
-      "Answered deterministically from your recorded data. Live Meta AI is off, so no paid request was made.",
-    );
+    setAnswer(displayAnswer);
     if(next.insufficientData){setInteractionPhase("error");recordBuckyEvent({id:"question:"+profile.id+":"+msgIdRef.current,status:"unsupported",title:q.length>70?q.slice(0,67)+"…":q,detail:"No changes were made. See Bucky’s response above.",profileId:profile.id,profileName:profile.name});}
-    setQuestion("");
     // The built-in interpreter couldn't make a record of this, but it
     // reads like one: offer explicit AI interpretation (Phase D). The
     // deterministic answer above stands either way.
     if (looksLikeActionAttempt(q)) setAiInterpretText(q);
     if (viaVoice && voiceResponsesOnRef.current) {
-      speakText(prepareSpeechText(next.answer, next.facts));
+      speakText(prepareSpeechText(displayAnswer.answer, displayAnswer.facts));
     } else if (viaVoice) {
       setVoicePhase((p) => voiceTransition(p, "reset"));resumeVoice();
     }
+    } finally {accepted.finish();}
   }
 
   function cancelPendingAction() {
@@ -675,31 +680,32 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
    * becomes the standard preview. Nothing is auto-confirmed, ever.
    */
   async function tryAiInterpret() {
-    if (!aiInterpretText || !profile || interpretBusy) return;
+    const targetProfile=messageOwnerRef.current??profile;
+    if (!aiInterpretText || !targetProfile || interpretBusy) return;
     setInterpretBusy(true);
     setInterpretNote("");
     try {
       const res = await requestBuckyInterpret(
         aiInterpretText,
         {
-          profileName: profile.name,
-          profileKind: profile.kind,
-          currency: profile.currency,
+          profileName: targetProfile.name,
+          profileKind: targetProfile.kind,
+          currency: targetProfile.currency,
           bucketNames: buckets
-            .filter((b) => b.profileId === profile.id && b.kind === "savings")
+            .filter((b) => b.profileId === targetProfile.id && b.kind === "savings")
             .map((b) => b.name),
           employeeNames: employees
-            .filter((e) => e.profileId === profile.id)
+            .filter((e) => e.profileId === targetProfile.id)
             .map((e) => e.name),
         },
-        { liveTestToken: liveToken },
+
       );
       if (!res.proposal) {
         setInterpretNote("The AI couldn't turn that into a record either. Try rewording it or use the normal record form. Nothing was saved.");
         return;
       }
       const checked = buildActionFromModelProposal(aiInterpretText, res.proposal, {
-        profile,
+        profile:targetProfile,
         buckets,
         employees,
         transactions: effectiveTransactions,
@@ -750,6 +756,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     setActionBusy(true);
     setActionError("");
     try {
+      messageOwnerRef.current=profiles.find(owner=>owner.id===pendingAction.profileId)??null;
       const txn = buildBuckyTransaction(pendingAction, nowIso());
       validateTransaction(txn);
       // Commit-confirmed save: resolves only when IndexedDB commits, and
@@ -783,7 +790,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         }
       } else {
         const updated = analyzeBuckyFinances({
-          profile, buckets, transactions: merged, products, sales, employees,
+          profile:profiles.find(owner=>owner.id===txn.profileId)??profile, buckets, transactions: merged, products, sales, employees,
         });
         const currency = updated.currencies.find((c) => c.currency === pendingAction.currency);
         if (currency) {
@@ -909,6 +916,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     if (!pendingAppAction || appBusy || !profile) return;
     if (executedAppIdsRef.current.has(pendingAppAction.id)) { setAppError("This action was already completed. It won't run again."); return; }
     const action = pendingAppAction;
+    messageOwnerRef.current=profiles.find(owner=>owner.id===action.profileId)??null;
     recordBuckyEvent({ id: action.id, status: "saving", title: appActionTitle(action), detail: appActionTitle(action), profileId: action.profileId, profileName: action.profileName, currency: action.currency });
     setAppBusy(true);
     setAppError("");
@@ -922,12 +930,9 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         message = `Employee "${record.name}" added to ${action.profileName}.`;
         facts = [{ label: "Employee", value: record.name }, { label: "Role", value: record.role ?? "Not set" }, { label: "Status", value: "Active" }];
       } else if (action.kind === "adjust-stock") {
-        const current = effectiveProducts.find((p) => p.id === action.productId);
-        if (!current) throw new Error(`"${action.productName}" no longer exists. Nothing was changed.`);
-        const nextStock = current.stock + action.delta;
-        await productsRepo.update(current.id, { stock: nextStock });
-        message = `"${current.name}" stock increased by ${action.delta} to ${nextStock}.`;
-        facts = [{ label: "Product", value: current.name }, { label: "New stock", value: String(nextStock) }];
+        const current=await incrementProductStock({id:action.productId,profileId:action.profileId,currency:action.currency,delta:action.delta,actionId:action.id});
+        message=`"${current.name}" stock increased by ${action.delta} to ${current.stock}.`;
+        facts=[{label:'Product',value:current.name},{label:'New stock',value:String(current.stock)}];
       } else if (action.kind === "create-bucket") {
         const record = buildBucketRecord(action, nowIso());
         validateBucket(record);
@@ -996,46 +1001,57 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
    */
   function processTranscriptAutomatically(heard: string) {
     setPendingTranscript(heard);
-    setQuestion(heard);
+    // The composer is never filled with the voice transcript: it would
+    // leave stale text behind after the message is sent. Only clear a
+    // composer copy that exactly matches what was just submitted (e.g.
+    // left over from a reviewed transcript); an unrelated typed draft
+    // the user is still writing is preserved untouched.
+    if (getBuckyDraft().trim() === heard.trim()) setQuestion("");
     setInterimTranscript("");
     setVoicePhase((p) => voiceTransition(p, "heard"));
     ask(heard, true);
   }
 
   /**
-   * Review step, kept only for partial transcripts after a recognition
-   * error: they may be incomplete, so they are never auto-processed.
-   * The text lands in the command input to read/edit, and only an
-   * explicit Run this transcript processes it.
+   * Settle a finished session. A valid final transcript is sent once,
+   * automatically — there is no transcript review/Run step. After a
+   * genuine recognition failure the transcript may be incomplete, so it
+   * is discarded rather than executed: the recognition error already
+   * shown explains what happened and the user can simply speak again.
+   * A user-cancelled session settles silently. Interpretation still
+   * only ever *proposes* writes: every record change needs the
+   * structured preview and an explicit Confirm.
    */
-  function offerTranscriptForReview(heard: string) {
-    setPendingTranscript(heard);
-    setQuestion(heard);
-    setInterimTranscript("");
-    // Direct set (not a transition): after a recognition error the phase
-    // may be "error"/"denied", and a partial transcript must still land
-    // in review — never in processing.
-    setVoicePhase("review");
-  }
-
-  /** Settle a finished session: auto-process only a clean transcript. */
   function settleTranscript(heard: string) {
+    if (recognitionCancelledRef.current) {
+      setPendingTranscript("");
+      setInterimTranscript("");
+      return;
+    }
     if (
       shouldAutoProcessTranscript({
         heard,
         errorCode: recognitionErrorRef.current,
-        cancelled: recognitionCancelledRef.current,
+        cancelled: false,
       })
     ) {
       processTranscriptAutomatically(heard);
-    } else {
-      offerTranscriptForReview(heard);
+      return;
+    }
+    // Genuinely failed recognition: never run the uncertain transcript,
+    // never park it in a review step, and leave no stale composer text.
+    if (getBuckyDraft().trim() === heard.trim()) setQuestion("");
+    setPendingTranscript("");
+    setInterimTranscript("");
+    setVoicePhase("idle");
+    if (!recognitionErrorRef.current) {
+      setVoiceError("I didn't catch that clearly. Tap the microphone and say it again.");
     }
   }
 
   function startHomeVoice(){
     if(hasPendingPreview||actionBusy||productBusy||appBusy||interpretBusy)return;
-    continuousVoice.start();followLatest.current=true;cancelListening();stopSpeaking();setVoiceError('');setPendingTranscript('');setInterimTranscript('');setVoiceHistoryExpanded(false);setVoiceSessionStart(thread.at(-1)?.id??0);
+    messageOwnerRef.current=null;continuousVoice.start();followLatest.current=true;cancelListening();stopSpeaking();setVoiceError('');setPendingTranscript('');setInterimTranscript('');setVoiceHistoryExpanded(true);setVoiceSessionStart(thread.at(-1)?.id??0);
     if(!recognitionSupported){continuousVoice.stop();setInteractionPhase('error');setVoicePhase('unsupported');setVoiceError("Voice input isn't supported in this browser. You can still type your question.");return;}
     // One-click reliability: start the microphone synchronously in this
     // activation instead of after a spoken greeting (the greeting delay
@@ -1097,7 +1113,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       const { finalText, interimText } = transcriptsFromEvent(event);
       // Any sign of speech — final or interim — restarts the trailing
       // silence window, so a natural pause (or a completed utterance)
-      // ends listening into review after ~3 quiet seconds.
+      // ends listening and settles the transcript after ~3 quiet seconds.
       if (finalText || interimText) {
         lastResultAtRef.current = Date.now();
         scheduleSilenceTimer();
@@ -1118,11 +1134,17 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       if (recognitionCancelledRef.current || recognitionRef.current !== recognition) return;
       clearSilenceTimer();
       // Record the failure; onend (which always follows) decides the
-      // final state. A partial transcript is offered for review, never
-      // executed automatically.
+      // final state. A partial transcript after a genuine error is
+      // discarded, never executed automatically.
       setMicPending(false);setInteractionPhase("error");
       recognitionErrorRef.current = event.error;
-      if(event.error!=="no-speech")continuousVoice.stop();
+      // A benign settle error ("no-speech" / "aborted") after speech was
+      // already captured is not a failure: it must neither kill the
+      // continuous voice session nor lose the finished transcript —
+      // onend settles and auto-processes it.
+      const benignWithSpeech = (event.error === "no-speech" || event.error === "aborted") && finalTranscriptRef.current.trim().length > 0;
+      if(event.error!=="no-speech"&&event.error!=="aborted")continuousVoice.stop();
+      if (benignWithSpeech) return;
       const mapped = speechRecognitionErrorMessage(event.error);
       setVoicePhase(mapped.phase);
       setVoiceError(mapped.message);
@@ -1157,7 +1179,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             return;
           } catch {
             // Restart refused (session already active/ended); fall
-            // through to the review step with whatever was heard.
+            // through and settle with whatever was heard.
           }
         }
       }
@@ -1200,7 +1222,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
 
   /**
    * Intentional completion: stop() (not abort()) so the browser flushes
-   * any queued final results before onend moves them into review.
+   * any queued final results before onend settles them.
    */
   function finishListening() {
     clearSilenceTimer();
@@ -1209,7 +1231,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
       recognitionRef.current?.stop();
     } catch {
       // Recognition already ended; onend will not fire again, so settle
-      // into review/idle here with whatever was accumulated.
+      // here with whatever was accumulated.
       const heard = finalTranscriptRef.current.trim();
       finalTranscriptRef.current = "";
       recognitionRef.current = null;
@@ -1234,22 +1256,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     setInterimTranscript("");
     setPendingTranscript("");
     setVoicePhase((p) => (p === "listening" || p === "processing" ? voiceTransition(p, "stop") : p));
-  }
-
-  /** Explicitly run the reviewed transcript through the normal pipeline. */
-  function useReviewedTranscript() {
-    const text = question.trim();
-    if (!text) return;
-    setPendingTranscript("");
-    setVoicePhase((p) => voiceTransition(p, "heard"));
-    ask(text, true);
-  }
-
-  function discardReviewedTranscript() {
-    setPendingTranscript("");
-    setQuestion("");
-    setVoiceError("");
-    setVoicePhase((p) => voiceTransition(p, "reset"));
   }
 
   /** Put an auto-processed transcript back in the input to fix a mis-hearing. */
@@ -1296,7 +1302,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     if (!active) { continuousVoice.stop();cancelListening(); stopSpeaking(); setPendingTranscript(""); setInterimTranscript(""); setVoiceError(""); setVoicePhase("idle"); }
   }, [active]);
   useEffect(() => {
-    if (!active || !conversationRequest || consumedRequest.current === conversationRequest.id || !analysis) return;
+    if (!active || !conversationRequest || consumedRequest.current === conversationRequest.id) return;
     if (hasPendingPreview) return;
     if (conversationRequest.profileId && profile?.id !== conversationRequest.profileId) {
       if (profiles.some(p => p.id === conversationRequest.profileId)) { setInteractionPhase("idle"); setSelectedProfileId(conversationRequest.profileId); return; }
@@ -1306,7 +1312,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
     }
     consumedRequest.current = conversationRequest.id;
     if(conversationRequest.mode==='voice'){startHomeVoice();return;}
-    if (conversationRequest.question) { setQuestion(conversationRequest.question); ask(conversationRequest.question); }
+    if (conversationRequest.question) { ask(conversationRequest.question,false,true); }
   }, [active, conversationRequest, analysis, profile, hasPendingPreview, profiles]);
 
   // Leaving the panel always silences Bucky: no orphan mic or speech.
@@ -1336,53 +1342,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
         </div>
       </div>}
       <div className="bucky-interactions">
-      {profiles.length === 0 ? (
-        <div className="empty-state">
-          <p className="muted">Create a profile to unlock insights from your saved records.</p>
-          <div className="row-actions">
-            <a className="btn ghost small" href="#/personal">Set up a profile</a>
-          </div>
-        </div>
-      ) : result?.error ? (
-        <p className="alert-error" role="alert">{result.error}</p>
-      ) : analysis ? (
-        <>
-          {inlineVoice && <div className="bucky-home-voice-toolbar"><span className={voiceError?'bucky-voice-dot is-error':speechPending||voicePhase==='speaking'||voicePhase==='processing'||interactionPhase==='processing'?'bucky-voice-dot is-busy':voicePhase==='listening'&&!micPending&&recognitionRef.current?'bucky-voice-dot':'bucky-voice-dot is-idle'} role="status"><span className="sr-only">{voiceError?'Voice unavailable':speechPending?'Preparing greeting':voicePhase==='speaking'?'Speaking':micPending?'Starting microphone':voicePhase==='listening'?'Listening':voicePhase==='processing'||interactionPhase==='processing'?'Processing':voicePhase==='review'?'Review transcript':pendingAction||pendingProduct?'Confirmation required':'Ready'}</span></span><div className="bucky-home-voice-actions"><button className="btn ghost small" type="button" onClick={stopHomeVoice}>Stop</button><button className="btn ghost small" type="button" aria-expanded={voiceHistoryExpanded} onClick={()=>setVoiceHistoryExpanded(value=>!value)}>Details</button><button className="btn ghost small" type="button" onClick={()=>{if(!onNavigateAway || onNavigateAway())stopHomeVoice();}}>Close</button></div></div>}
+      <>
+          {inlineVoice && <div className="bucky-home-voice-toolbar"><span className={voiceError?'bucky-voice-dot is-error':speechPending||voicePhase==='speaking'||voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'bucky-voice-dot is-busy':voicePhase==='listening'&&!micPending&&recognitionRef.current?'bucky-voice-dot':'bucky-voice-dot is-idle'} role="status"><span className="sr-only">{voiceError?'Voice unavailable':speechPending?'Preparing greeting':voicePhase==='speaking'?'Speaking':micPending?'Starting microphone':voicePhase==='listening'?'Listening':voicePhase==='processing'||interactionPhase==='processing'||serverBusy?'Processing':voicePhase==='review'?'Review transcript':pendingAction||pendingProduct?'Confirmation required':'Ready'}</span></span><div className="bucky-home-voice-actions"><button className="btn ghost small" type="button" onClick={stopHomeVoice}>Stop</button><button className="btn ghost small" type="button" aria-expanded={voiceHistoryExpanded} onClick={()=>setVoiceHistoryExpanded(value=>!value)}>Details</button><button className="btn ghost small" type="button" onClick={()=>{if(!onNavigateAway || onNavigateAway())stopHomeVoice();}}>Close</button></div></div>}
           <div className="bucky-scroll-region" ref={conversationScroll} onScroll={event=>{const el=event.currentTarget;followLatest.current=el.scrollHeight-el.scrollTop-el.clientHeight<40;}} tabIndex={inlineVoice?0:undefined} role={inlineVoice?'region':undefined} aria-label={inlineVoice?'Voice conversation':undefined}>
           {inlineVoice && voiceError && <div><p className="alert-error" role="alert">{voiceError}</p><button className="btn ghost small" type="button" disabled={!recognitionSupported} onClick={ttsSupported?startHomeVoice:startListening}>{ttsSupported?'Retry':'Listen without greeting'}</button></div>}
-          {(!inlineVoice || voiceHistoryExpanded) && profiles.length > 1 && (
-            <div className="selector-main bucky-profile-row">
-              <label htmlFor="bucky-profile">Analysing</label>
-              <select
-                id="bucky-profile"
-                className="input selector-select"
-                disabled={micPending || pendingAction !== null || pendingProduct !== null || actionBusy || productBusy || voicePhase === "listening" || voicePhase === "processing"}
-                value={profile?.id ?? ""}
-                onChange={(e) => {
-                  setInteractionPhase("idle");
-                  setSelectedProfileId(e.target.value);
-                  setAnswer(null);
-                  lastAnswerRef.current = null;
-
-                  setPendingAction(null);
-                  setPendingProduct(null);
-                  setProductError("");
-                  setSavedResult(null);
-                  setActionError("");
-                }}
-              >
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.kind === "business" ? "Business" : "Personal"})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-
-
-          {(!inlineVoice || voiceHistoryExpanded) && (!analysis.hasAnyData ? (
+          {messageOwnerRef.current && analysis && (!inlineVoice || voiceHistoryExpanded) && (!analysis.hasAnyData ? (
             <div className="empty-state">
               <p>No records to analyse for {analysis.profileName} yet.</p>
               <p className="muted">
@@ -1393,7 +1357,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             <details className="bucky-insight-details"><summary>Profile overview <span className="count-badge">{analysis.insights.length}</span></summary><ul className="bucky-insights">
               {analysis.insights.map((insight) => {
                 const proposal = insight.proposalId
-                  ? analysis.proposals.find((p) => p.id === insight.proposalId)
+                  ? analysis?.proposals.find((p) => p.id === insight.proposalId)
                   : undefined;
                 return (
                   <li key={insight.id} className={`bucky-insight bucky-${insight.severity}`}>
@@ -1441,7 +1405,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                     </dl>
                   )}
                   {(!inlineVoice||voiceHistoryExpanded)&&msg.proposalIds.map((id) => {
-                    const proposal = analysis.proposals.find((p) => p.id === id);
+                    const proposal = analysis?.proposals.find((p) => p.id === id);
                     return proposal && (!msg.profileId || msg.profileId === profile?.id) ? (
                       <button key={id} className="btn ghost small" type="button" onClick={() => { if (proposal.action.type === "scan" && onScanRequest) { onScanRequest(); return; } if (onNavigateAway && !onNavigateAway()) return; goToProposal(proposal); }}>
                         {proposal.action.label}
@@ -1471,16 +1435,16 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
                 The built-in interpreter couldn't turn “{aiInterpretText}” into a record, and nothing was saved.
               </p>
               <div className="row-actions">
-                <button className="btn ghost small" type="button" onClick={() => void tryAiInterpret()} disabled={interpretBusy || !liveToken.trim()}>
-                  {interpretBusy ? "Interpreting…" : "Try AI interpretation (uses 1 live request)"}
+                <button className="btn ghost small" type="button" onClick={() => void tryAiInterpret()} disabled={interpretBusy}>
+                  {interpretBusy ? "Interpreting…" : "Try AI interpretation"}
                 </button>
-                {!liveToken.trim() && <span className="muted">Enter the live test token in Settings → Bucky &amp; Voice (kept in memory only, never saved). The suggestion is still checked and previewed before anything is saved.</span>}
+                <span className="muted">Uses live Meta AI when configured on the server. The suggestion is still checked and previewed before anything is saved.</span>
               </div>
               {interpretNote && <p className="muted" role="status">{interpretNote}</p>}
             </div>
           )}
 
-          {(!inlineVoice || voiceHistoryExpanded) && presentation.events.some(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving') && <details className="bucky-action-journal" open><summary>Recent actions</summary><ol>{presentation.events.filter(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving').slice(-3).map(event=><li key={event.id}><span className={'bucky-event-status bucky-event-status--'+event.status}>{ACTION_STATUS_LABELS[event.status]}</span><strong>{event.title}</strong><p>{event.detail}</p></li>)}</ol></details>}
+          {messageOwnerRef.current && (!inlineVoice || voiceHistoryExpanded) && presentation.events.some(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving') && <details className="bucky-action-journal" open><summary>Recent actions</summary><ol>{presentation.events.filter(event=>event.profileId===profile?.id && event.status!=='awaiting' && event.status!=='saving').slice(-3).map(event=><li key={event.id}><span className={'bucky-event-status bucky-event-status--'+event.status}>{ACTION_STATUS_LABELS[event.status]}</span><strong>{event.title}</strong><p>{event.detail}</p></li>)}</ol></details>}
           {pendingAction && (
             <div className="bucky-action-preview" role="region" aria-label="Review this action before saving">
               <p className="bucky-action-state" role="status">{actionBusy?"Saving…":"Awaiting your confirmation"}</p>
@@ -1594,26 +1558,11 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             {interimTranscript && voicePhase === "listening" && (
               <p className="bucky-voice-interim" role="status">{inlineVoice?"YOU: ":"Heard: "}{interimTranscript}…</p>
             )}
-            {pendingTranscript && voicePhase === "review" && (
-              <div className="bucky-voice-review">
-                <p role="status"><strong>Bucky heard:</strong> “{pendingTranscript}”</p>
-                {inlineVoice&&<label>Transcript<input className="input" value={question} onChange={e=>setQuestion(e.target.value)}/></label>}
-                <p className="muted">Speech stopped early, so this wasn't run automatically. Edit the transcript if anything is wrong — nothing runs until you press Run.</p>
-                <div className="row-actions">
-                  <button className="btn small" type="button" onClick={useReviewedTranscript} disabled={!question.trim()}>
-                    Run this transcript
-                  </button>
-                  <button className="btn ghost small" type="button" onClick={discardReviewedTranscript}>
-                    Discard
-                  </button>
-                </div>
-              </div>
-            )}
-            {(!inlineVoice||voiceHistoryExpanded)&&pendingTranscript && voicePhase !== "review" && voicePhase !== "listening" && (
+            {(!inlineVoice||voiceHistoryExpanded)&&pendingTranscript && voicePhase !== "listening" && (
               <div className="bucky-voice-heard">
                 <p role="status"><strong>Heard:</strong> “{pendingTranscript}”</p>
                 <div className="row-actions">
-                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={()=>{if(inlineVoice){stopSpeaking();setQuestion(pendingTranscript);setVoicePhase("review");setVoiceHistoryExpanded(true);}else correctTranscript();}}>
+                  <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={correctTranscript}>
                     Correct
                   </button>
                   <button className="btn ghost small" type="button" disabled={pendingAction !== null || pendingProduct !== null} onClick={retryListening}>
@@ -1639,14 +1588,14 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
               ask(question);
             }}
           >
-            <label htmlFor="bucky-question">Ask Bucky about {analysis.profileName}</label>
+            <label htmlFor="bucky-question">Ask Bucky</label>
             <div className="bucky-ask-row">
               <input
                 id="bucky-question"
                 className="input"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask about your finances…"
+                placeholder="Ask Bucky anything..."
                 autoComplete="off"
               />
               <button className="btn" type="submit" disabled={!question.trim() || serverBusy || micPending || pendingAction !== null || pendingProduct !== null || actionBusy || productBusy || interpretBusy || voicePhase === "listening" || voicePhase === "processing"}>Send</button>
@@ -1700,9 +1649,6 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
               {voicePhase === "processing" && (
                 <span className="bucky-voice-status" role="status">Processing what you said…</span>
               )}
-              {voicePhase === "review" && (
-                <span className="bucky-voice-status" role="status">Speech stopped early — check the text below before running it.</span>
-              )}
               <a
                 className="btn ghost small"
                 href="#/settings"
@@ -1718,8 +1664,7 @@ export default function BuckyPanel({ profiles, buckets, transactions, products, 
             </div>
 
           </form>
-        </>
-      ) : null}
+      </>
       </div>
     </section>
   );

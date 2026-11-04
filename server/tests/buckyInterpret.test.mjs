@@ -98,7 +98,6 @@ const mockConfig = {
   port: 0,
   modelApiKeyConfigured: false,
   liveMetaEnabled: false,
-  liveTestTokenConfigured: false,
 };
 
 async function postInterpret(base, body, headers = {}) {
@@ -132,9 +131,8 @@ test("live interpret without gates is an explicit error, never a silent downgrad
 
 test("live interpret returns a validated proposal from a fake model response", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   try {
-    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true };
+    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true };
     const fakeFetch = async () => ({
       status: 200,
       text: async () =>
@@ -152,7 +150,7 @@ test("live interpret returns a validated proposal from a fake model response", a
         }),
     });
     await withServer(liveConfig, { fetchImpl: fakeFetch }, async (base) => {
-      const { status, json } = await postInterpret(base, payload({ mode: "live" }), { "x-bucketa-live-test": "test-token-not-real" });
+      const { status, json } = await postInterpret(base, payload({ mode: "live" }));
       assert.equal(status, 200);
       assert.equal(json.source, "meta-live");
       assert.equal(json.model, META_MODEL_ID);
@@ -161,15 +159,13 @@ test("live interpret returns a validated proposal from a fake model response", a
     });
   } finally {
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
   }
 });
 
 test("live interpret degrades to no-proposal when the model invents an employee", async () => {
   process.env.MODEL_API_KEY = "test-key-not-real";
-  process.env.LIVE_TEST_TOKEN = "test-token-not-real";
   try {
-    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true, liveTestTokenConfigured: true };
+    const liveConfig = { ...mockConfig, modelApiKeyConfigured: true, liveMetaEnabled: true };
     const fakeFetch = async () => ({
       status: 200,
       text: async () =>
@@ -187,7 +183,7 @@ test("live interpret degrades to no-proposal when the model invents an employee"
         }),
     });
     await withServer(liveConfig, { fetchImpl: fakeFetch }, async (base) => {
-      const { status, json } = await postInterpret(base, payload({ mode: "live" }), { "x-bucketa-live-test": "test-token-not-real" });
+      const { status, json } = await postInterpret(base, payload({ mode: "live" }));
       assert.equal(status, 200);
       assert.equal(json.source, "deterministic");
       assert.equal(json.proposal, null);
@@ -195,6 +191,5 @@ test("live interpret degrades to no-proposal when the model invents an employee"
     });
   } finally {
     delete process.env.MODEL_API_KEY;
-    delete process.env.LIVE_TEST_TOKEN;
   }
 });

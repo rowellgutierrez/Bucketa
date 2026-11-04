@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseMetaExtractionResponse, sendToMeta } from "../metaClient.mjs";
-import { assertLiveAllowed, createLiveLimiter } from "../liveGate.mjs";
+import { assertLiveAllowed } from "../liveGate.mjs";
 
 const REQUEST = {
   url: "https://api.meta.ai/v1/responses",
@@ -52,27 +52,32 @@ test("sendToMeta rejects oversized responses", async () => {
   );
 });
 
-test("live gates require flag, key, and per-request token together", () => {
+test("live gates require flag, key, and loopback origin together (no user token)", () => {
   const good = {
     liveMetaEnabled: true,
     modelApiKey: "test-dummy-key",
-    liveTestToken: "local-test-token",
-    requestToken: "local-test-token",
+    origin: "http://localhost:5173",
+    host: "127.0.0.1:8787",
   };
   assert.doesNotThrow(() => assertLiveAllowed(good));
+  assert.doesNotThrow(() => assertLiveAllowed({ ...good, origin: "http://127.0.0.1:5173" }));
+  // Non-browser local callers send no Origin; loopback binding is the boundary.
+  assert.doesNotThrow(() => assertLiveAllowed({ ...good, origin: undefined }));
   assert.throws(() => assertLiveAllowed({ ...good, liveMetaEnabled: false }), /not enabled/);
   assert.throws(() => assertLiveAllowed({ ...good, modelApiKey: "" }), /not enabled/);
-  assert.throws(() => assertLiveAllowed({ ...good, requestToken: undefined }), /not authorized/);
-  assert.throws(() => assertLiveAllowed({ ...good, requestToken: "wrong" }), /not authorized/);
-  assert.throws(() => assertLiveAllowed({ ...good, liveTestToken: "" }), /not authorized/);
+  assert.throws(() => assertLiveAllowed({ ...good, origin: "https://evil.example" }), /not authorized/);
+  assert.throws(() => assertLiveAllowed({ ...good, origin: "http://evil.example" }), /not authorized/);
+  assert.throws(() => assertLiveAllowed({ ...good, host: "evil.example" }), /not authorized/);
+  assert.throws(() => assertLiveAllowed({ ...good, origin: "not a url" }), /not authorized/);
 });
 
-test("limiter allows exactly 3 attempts per session", () => {
-  const limiter = createLiveLimiter();
-  limiter.consume();
-  limiter.consume();
-  limiter.consume();
-  assert.equal(limiter.used, 3);
-  assert.equal(limiter.remaining, 0);
-  assert.throws(() => limiter.consume(), /limit/);
+test("repeated live requests are not blocked by an old application quota", () => {
+  const good = { liveMetaEnabled: true, modelApiKey: "test-dummy-key", origin: "http://localhost:5173", host: "127.0.0.1:8787" };
+  for (let i = 0; i < 10; i += 1) assert.doesNotThrow(() => assertLiveAllowed(good));
+});
+
+test("live gating has no session limiter export (repeated requests are provider-limited only)", async () => {
+  const gate = await import("../liveGate.mjs");
+  assert.equal("createLiveLimiter" in gate, false);
+  assert.equal("MAX_LIVE_REQUESTS_PER_SESSION" in gate, false);
 });

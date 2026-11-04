@@ -1,3 +1,4 @@
+import {useBuckyPageProfile} from '../lib/buckyProfileContext';
 import { buildActivity, historyHref, transactionsHrefForProfile, parseHistoryScope, profileIdFromHash, selectHistory, type HistoryRequest } from "../lib/historyScope";
 import { onRecordsChanged } from "../lib/dataChange";
 import PageHeader from "../components/ui/PageHeader";
@@ -82,6 +83,7 @@ function BusinessTransactionsPage({ preferredProfileId = "" }: { preferredProfil
   const [loadError, setLoadError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState("");
+  useBuckyPageProfile(profileId);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
 

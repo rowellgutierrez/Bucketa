@@ -16,7 +16,7 @@ import { isValidCurrencyCode } from "./money.mjs";
  * extraction exactly) before entering the identical preview → confirm →
  * validated save pipeline. Any failure means "no proposal" and the user
  * keeps using the deterministic interpreter. Live requests go through the
- * same gates and single-attempt session limiter as every other live call.
+ * same gates as every other live call, with no session request cap.
  */
 
 export const BUCKY_INTERPRET_MAX_BODY_BYTES = 16_384;
